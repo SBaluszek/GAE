@@ -1,0 +1,1726 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+#EPI
+rm(list = ls())
+set.seed(2019)
+```
+
+```{r}
+library(biomaRt)
+#library(DESeq2)
+library(ggplot2)
+library(survminer)
+library(survival)
+library(msigdbr)
+library(fgsea)
+library(grid)
+library(gridGraphics)
+library(limma)
+library(ComplexHeatmap)
+library(circlize)
+#library(numbers)
+#library(ggrepel)
+#library(ipred)
+```
+
+```{r}
+dropNA = function(x){
+  x = x[!is.na(x)]
+  return(x)
+}
+
+flip <- function(x){
+  x = as.matrix(x)
+  y = t(apply(x, 2, rev))
+  rownames(y)=colnames(x)
+  colnames(y)=rev(rownames(x))
+  return (y)
+}
+
+wd = getwd()
+```
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "res_epi.Rdata")
+```
+
+```{r}
+wd = getwd()
+setwd(paste0(wd, "/dt"))
+load("all.rdata")
+cli$location = ifelse(cli$tumor_location=="supratentorial, temporal lobe", "Temporal", "Other")
+
+cli$localization = ifelse(grepl("posterior fossa", tolower(cli$tumor_location)), "Other", ifelse(cli$supratentorial_localization=="cerebral cortex", "Cortical", ifelse(cli$supratentorial_localization=="not listed in medical record", NA, "Other")))
+```
+
+```{r}
+wd = getwd()
+setwd(paste0(wd, "/dt"))
+load("res_epi.Rdata")
+library(HGNChelper)
+X = res$hgnc
+x = checkGeneSymbols(X)
+x = x[x$Approved==F,]
+x = x[!is.na(x$Suggested.Symbol),]
+x$nn = sapply(strsplit(x$Suggested.Symbol, " /// "), function(el){el[1]})
+X[match(x$x, X)] = as.character(x$nn)
+res$hgnc = X
+```
+
+```{r}
+#https://maayanlab.cloud/Harmonizome/dataset/TRANSFAC+Curated+Transcription+Factor+Targets
+setwd(paste0(wd, "/dt"))
+enc = gmtPathways("gene_set_library_crisp.gmt")
+
+Q = setNames(res$stat, res$hgnc)
+Q = Q[!is.na(res$stat)]
+Q = Q[!is.na(res$hgnc)]
+Q = Q[order(abs(Q), decreasing = T)]
+Q = Q[!duplicated(names(Q))]
+Q = Q-median(Q)
+
+enc = lapply(enc, function(el){
+  return(unique(intersect(el, names(Q))))
+})
+
+enc.res <- fgseaMultilevel(pathways = enc, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=1000)
+
+enc.res[order(enc.res$padj),]
+```
+```{r}
+f = function(el){
+    pathway = enc[[el]]
+    stats = Q
+    gseaParam = 1
+    rnk <- rank(-stats)
+    ord <- order(rnk)
+    statsAdj <- stats[ord]
+    statsAdj <- sign(statsAdj) * (abs(statsAdj)^gseaParam)
+    statsAdj <- statsAdj/max(abs(statsAdj))
+    pathway <- unname(as.vector(na.omit(match(pathway, names(statsAdj)))))
+    pathway <- sort(pathway)
+    gseaRes <- calcGseaStat(statsAdj, selectedStats = pathway, 
+        returnAllExtremes = TRUE)
+    bottoms <- gseaRes$bottoms
+    tops <- gseaRes$tops
+    n <- length(statsAdj)
+    xs <- as.vector(rbind(pathway - 1, pathway))
+    ys <- as.vector(rbind(bottoms, tops))
+    toPlot <- data.frame(x = c(0, xs, n + 1), y = c(0, ys, 0))
+    diff <- (max(tops) - min(bottoms))/8
+    return(toPlot)
+}
+
+df = data.frame(gene = c("", names(Q), ""))
+df$x = (1:length(df$gene)) -1
+for(EL in c("REST")){
+  df[,EL] = ifelse(df$gene %in% enc[[EL]], 1, 0)
+  df[,paste0(EL, "_ES")] = NA
+  x = f(EL)
+  df[match(x$x, df$x), paste0(EL, "_ES")] = x$y
+}
+
+df
+```
+```{r}
+df[!is.na(df$REST),]
+```
+
+
+```{r}
+Fig2GSEA_enc = ggplot() +
+  geom_hline(yintercept = 0) +
+  geom_line(data = df[!is.na(df$REST_ES),], aes(x = x, y = REST_ES, color = "REST"), size = 1.5) +
+  #geom_line(data = df[!is.na(df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL_ES),], aes(x = x, y = VERHAAK_GLIOBLASTOMA_MESENCHYMAL_ES, color = "mesenchymal"), size = 1.5) +
+  geom_segment(aes(x=df[df$REST == 1,"x"],xend=df[df$REST == 1,"x"],y=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.05 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))) ,yend=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.15 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))), color = "REST")) +
+  #geom_segment(aes(x=df[df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL == 1,"x"],xend=df[df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL == 1,"x"],y=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.05 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))) ,yend=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.15 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))), color = "mesenchymal")) +
+  scale_x_continuous(expand = c(0, 150)) + scale_y_continuous(expand = c(0, 0)) +
+  scale_color_manual(breaks = c("REST"), values = c("red4"), name = "Signature in Transfac:", labels = c(paste0("REST: padj = ",signif(as.numeric(enc.res[enc.res$pathway == "REST","padj"]),digits = 3), ", NES = ",signif(as.numeric(enc.res[enc.res$pathway == "REST","NES"]),digits = 3))), guide = guide_legend(direction = "vertical", title.hjust = 0)) +
+  labs(title = "Gene Set Enrichment Analysis", x = "Genes ranked by seizure history logFC", y = "Enrichment Score") +
+  theme_classic() + theme(legend.position = "top", legend.justification='left')
+
+Fig2GSEA_enc
+```
+
+```{r}
+enc.res[order(abs(enc.res$NES), decreasing = T)[1:10],]$pathway
+```
+
+```{r}
+p = plotGseaTable(pathways =enc[enc.res[order(abs(enc.res$NES), decreasing = T)[1:10],]$pathway],
+              stats = Q,
+              fgseaRes = enc.res, render = F, gseaParam = 0.5, colwidths = c(1,2,1,0,1.5))
+p$grobs[[1]]$label = "Trancfac term"
+
+plot(p)
+```
+
+
+```{r}
+Fig2GSEA_enc = p
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(Fig2GSEA_enc, file = "Fig2sGSEA_enc.Rdata")
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+ggsave(Fig2GSEA_enc, filename = "Fig2sGSEA_enc.png", width = 8, height = 6, dpi = 400)
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+write.csv(x = enc.res[order(enc.res$pval),1:6], file = "TF_GSEA2.csv")
+#c3.res[order(c3.res$pval),]
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(Fig2GSEA_enc, file = "Fig2sGSEA_enc.Rdata")
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+ggsave(Fig2GSEA_enc, filename = "Fig2sGSEA_enc.png", width = 8, height = 5, dpi = 400)
+```
+=
+
+
+
+
+```{r}
+c3 = msigdbr(species = "Homo sapiens", category = "C3", subcategory = "TFT:TFT_Legacy")
+#rbind(msigdbr(species = "Homo sapiens", category = "C3", subcategory = c("TFT:GTRD")), msigdbr(species = "Homo sapiens", category = "C3", subcategory = c("TFT:TFT_Legacy")))
+c3 = c3 %>% split(x = .$gene_symbol, f = .$gs_name)
+```
+
+```{r}
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$log2FoldChange)]
+Q = Q[!is.na(res$hgnc)]
+Q = Q[order(abs(Q), decreasing = T)]
+Q = Q[!duplicated(names(Q))]
+Q = Q-median(Q)
+
+c3 = lapply(c3, function(el){
+  return(unique(intersect(el, names(Q))))
+})
+
+c3.res <- fgseaMultilevel(pathways = c3, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000)
+
+c3.res[order(c3.res$padj),]
+```
+
+```{r}
+f = function(el){
+    pathway = c3[[el]]
+    stats = Q
+    gseaParam = 1
+    rnk <- rank(-stats)
+    ord <- order(rnk)
+    statsAdj <- stats[ord]
+    statsAdj <- sign(statsAdj) * (abs(statsAdj)^gseaParam)
+    statsAdj <- statsAdj/max(abs(statsAdj))
+    pathway <- unname(as.vector(na.omit(match(pathway, names(statsAdj)))))
+    pathway <- sort(pathway)
+    gseaRes <- calcGseaStat(statsAdj, selectedStats = pathway, 
+        returnAllExtremes = TRUE)
+    bottoms <- gseaRes$bottoms
+    tops <- gseaRes$tops
+    n <- length(statsAdj)
+    xs <- as.vector(rbind(pathway - 1, pathway))
+    ys <- as.vector(rbind(bottoms, tops))
+    toPlot <- data.frame(x = c(0, xs, n + 1), y = c(0, ys, 0))
+    diff <- (max(tops) - min(bottoms))/8
+    return(toPlot)
+}
+
+df = data.frame(gene = c("", names(Q), ""))
+df$x = (1:length(df$gene)) -1
+for(EL in c("NRSF_01")){
+  df[,EL] = ifelse(df$gene %in% c3[[EL]], 1, 0)
+  df[,paste0(EL, "_ES")] = NA
+  x = f(EL)
+  df[match(x$x, df$x), paste0(EL, "_ES")] = x$y
+}
+
+df
+```
+
+```{r}
+Fig2GSEA_REST = ggplot() +
+  geom_hline(yintercept = 0) +
+  geom_line(data = df[!is.na(df$NRSF_01_ES),], aes(x = x, y = NRSF_01_ES, color = "REST"), size = 1.5) +
+  #geom_line(data = df[!is.na(df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL_ES),], aes(x = x, y = VERHAAK_GLIOBLASTOMA_MESENCHYMAL_ES, color = "mesenchymal"), size = 1.5) +
+  geom_segment(aes(x=df[df$NRSF_01 == 1,"x"],xend=df[df$NRSF_01 == 1,"x"],y=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.05 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))) ,yend=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.15 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))), color = "REST"), alpha = 0.3) +
+  #geom_segment(aes(x=df[df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL == 1,"x"],xend=df[df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL == 1,"x"],y=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.05 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))) ,yend=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.15 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))), color = "mesenchymal")) +
+  scale_x_continuous(expand = c(0, 150)) + scale_y_continuous(expand = c(0, 0.02)) +
+  scale_color_manual(breaks = c("REST"), values = c("red4"), name = "Signature in Hs.c3:", labels = c(paste0("REST: padj = ",signif(as.numeric(c3.res[c3.res$pathway == "NRSF_01","padj"]),digits = 3), ", NES = ",signif(as.numeric(c3.res[c3.res$pathway == "NRSF_01","NES"]),digits = 3))), guide = guide_legend(direction = "vertical", title.hjust = 0)) +
+  labs(title = "Gene Set Enrichment Analysis", x = "Genes ranked by seizure history logFC", y = "Enrichment Score") +
+  theme_classic() + theme(legend.position = "top", legend.justification='left')
+
+Fig2GSEA_REST
+```
+```{r}
+Fig2GSEA_REST
+```
+
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+write.csv(x = c3.res[order(c3.res$pval),1:6], file = "TF_GSEA.csv")
+#c3.res[order(c3.res$pval),]
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig2GSEA_REST,df, file = "Fig2GSEA_REST.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2GSEA_REST, filename = "Fig2GSEA_REST.png", width = 8, height = 5, dpi = 400)
+```
+
+
+```{r}
+#PWMEnrich
+```
+
+```{r}
+library(BSgenome.Hsapiens.UCSC.hg19)
+
+mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", host="grch37.ensembl.org")
+ensembl = useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", GRCh = 37)
+
+
+
+trl = getBM(attributes=c("ensembl_gene_id","hgnc_symbol", "gene_biotype", "entrezgene_id", "start_position", "end_position", "chromosome_name", "strand", "description","phenotype_description", "mim_morbid_description"), mart= ensembl)
+#trl$chromosome_name[nchar(trl$chromosome_name)>3] = gsub("_", "", substr(trl$chromosome_name[nchar(trl$chromosome_name)>3], 10, 11))
+
+res$hgnc = rownames(res)
+res$entrez =  trl$entrezgene[match(rownames(res), trl$hgnc_symbol)]
+res$chr =  trl$chromosome_name[match(rownames(res), trl$hgnc_symbol)]
+res$start =  trl$start_position[match(rownames(res), trl$hgnc_symbol)]
+res$end = trl$end_position[match(rownames(res), trl$hgnc_symbol)]
+res$strand = trl$strand[match(rownames(res), trl$hgnc_symbol)]
+res$biotype = trl$strand[match(rownames(res), trl$gene_biotype)]
+```
+
+
+
+
+
+```{r}
+x = res[res$gr == "Upregulated",]
+x = x[!x$chr=="MT",]
+x = x[!grepl("PATCH", x$chr),]
+x = x[!is.na(x$hgnc),]
+x$chr = sapply(gsub("CHR_HSCHR", "", x$chr), function(el){
+  unlist(strsplit(el, "_"))[1]
+})
+
+
+sequences = getSeq(BSgenome.Hsapiens.UCSC.hg19, names = paste0("chr", dropNA(x$chr)), start = dropNA(x$start-3000), end = dropNA(x$start+3000), strand = ifelse(dropNA(x$strand)<0, "-", "+"))
+sequences
+```
+
+
+
+
+```{r}
+#Downloaded from: http://jaspar.genereg.net/downloads/
+'setwd(paste0(wd, "/dt"))
+motifs.jaspar = readMotifs("JASPAR2020_CORE_vertebrates_non-redundant_pfms_transfac.txt", remove.acc=TRUE)
+genomic.acgt = getBackgroundFrequencies(s)
+pwms.jaspar = toPWM(motifs.jaspar, prior=genomic.acgt)
+bg.jaspar = makeBackground(pwms.jaspar, bg.seq =s, type="logn")
+
+motifs.hocomoco = readMotifs("HOCOMOCOv11_core_HUMAN_mono_jaspar_format.txt", remove.acc=TRUE)
+genomic.acgt = getBackgroundFrequencies(BSgenome.Hsapiens.UCSC.hg19)
+pwms.hocomoco = toPWM(motifs.hocomoco, prior=genomic.acgt)
+bg.hocomoco = makeBackground(pwms.hocomoco, organism=BSgenome.Hsapiens.UCSC.hg19, type="logn", quick=T)'
+```
+
+
+
+
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load("hocomocobg.Rdata")
+load("jasparbg.Rdata")
+```
+
+
+```{r}
+jaspar_up = motifEnrichment(sequences, bg.jaspar)
+hocomoco_up = motifEnrichment(sequences , bg.hocomoco)
+```
+
+
+```{r}
+jaspar_up.rep = groupReport(jaspar_up)
+hocomoco_up.rep = groupReport(hocomoco_up)
+
+f=function(x, n=16){
+  x = substr(x, 1, (nchar(x)-n))
+  return(x)
+}
+
+hocomoco_up.rep@d$target = unlist(lapply(hocomoco_up.rep$target, f))
+hocomoco_up.rep@d$id = unlist(lapply(hocomoco_up.rep$id, f))
+hocomoco_up.rep
+
+'plot(jaspar_up.rep[order(jaspar_up.rep$p.value)[1:10]], fontsize=12, id.fontsize=10)
+plot(hocomoco_up.rep[order(hocomoco_up.rep$p.value)[1:10]], fontsize=12, id.fontsize=10)'
+```
+
+```{r}
+d = as.data.frame(jaspar_up.rep@d[1:5,])
+d = d[order(d$raw.score, decreasing = T),]
+d$rank = 1:5
+d$raw.score = signif(d$raw.score, 3)
+d$padj = p.adjust(d$p.value, method = "BH")
+d$padj = signif(d$padj, 3)
+d$top.motif.prop = paste(signif(100*d$top.motif.prop, 3), "%")
+df = data.frame(x = unlist(lapply(c(1,2,3,4), rep, times = 5)), y = rep(-d$rank, times = 4), label = c(d$target, d$raw.score, d$padj, d$top.motif.prop))
+p = ggplot(df, aes(x = x, y = y, label = label)) +
+  geom_text(hjust = 0) +
+  scale_y_continuous(limits = c(-5.4, -0.6), expand = c(0,0)) +
+  scale_x_continuous(limits = c(1, 5), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+
+df = data.frame(x = c(1, 2, 3, 4, 5), y = c(0,0,0,0,0), label = c("Motif", "TF", "Score", "Adj. p-value", "In top motifs"), hjust = c(0.5, 0, 0, 0, 0))
+
+p2 = ggplot(df, aes(x = x, y = y, label = label, hjust = hjust)) +
+  geom_text(fontface = "bold") +
+  scale_x_continuous(limits = c(0, 6), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+```
+
+
+
+
+
+
+```{r}
+library(ggseqlogo)
+Fig2jaspar = ggarrange(p2, ggarrange(ggarrange(plotlist = lapply(jaspar_up.rep$pwms[d$target], function(X){
+  ggseqlogo(X$pfm) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+}), ncol = 1), p, ncol = 2, widths = c(2, 4)), ncol = 1, heights = c(1,6))
+```
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig2jaspar, file = "Fig2jaspar.Rdata")
+ggsave(Fig2jaspar, filename = "Fig2jaspar.png", width = 8, height = 5, dpi = 400)
+setwd(paste0(wd, "/Figures/Supplementary"))
+write.csv(x = jaspar_up.rep@d, file = "jaspar_up.csv")
+```
+
+
+```{r}
+d = as.data.frame(hocomoco_up.rep@d[1:5,])
+d = d[order(d$raw.score, decreasing = T),]
+d$rank = 1:5
+d$raw.score = signif(d$raw.score, 3)
+d$padj = p.adjust(d$p.value, method = "BH")
+d$padj = signif(d$padj, 3)
+d$top.motif.prop = paste(signif(100*d$top.motif.prop, 3), "%")
+df = data.frame(x = unlist(lapply(c(1,2,3,4), rep, times = 5)), y = rep(-d$rank, times = 4), label = c(d$target, d$raw.score, d$padj, d$top.motif.prop))
+p = ggplot(df, aes(x = x, y = y, label = label)) +
+  geom_text(hjust = 0) +
+  scale_y_continuous(limits = c(-5.4, -0.6), expand = c(0,0)) +
+  scale_x_continuous(limits = c(1, 5), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+
+df = data.frame(x = c(1, 2, 3, 4, 5), y = c(0,0,0,0,0), label = c("Motif", "TF", "Score", "Adj. p-value", "In top motifs"), hjust = c(0.5, 0, 0, 0, 0))
+
+p2 = ggplot(df, aes(x = x, y = y, label = label, hjust = hjust)) +
+  geom_text(fontface = "bold") +
+  scale_x_continuous(limits = c(0, 6), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+```
+
+
+
+
+
+
+
+
+```{r}
+Fig2shocomoco = ggarrange(p2, ggarrange(ggarrange(plotlist = lapply(hocomoco_up$pwms[sapply(d$target, function(el){
+  names(hocomoco_up$pwms)[grepl(el, names(hocomoco_up$pwms))]
+})], function(X){
+  ggseqlogo(X$pfm) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+}), ncol = 1), p, ncol = 2, widths = c(2, 4)), ncol = 1, heights = c(1,6))
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(Fig2shocomoco, file = "Fig2shocomoco.Rdata")
+ggsave(Fig2shocomoco, filename = "Fig2shocomoco.png", width = 8, height = 5, dpi = 400)
+write.csv(x = hocomoco_up.rep@d, file = "hocomoco_up.csv")
+```
+
+
+```{r}
+x
+```
+
+
+
+```{r}
+x = res[res$gr == "Downregulated",]
+x = x[!x$chr=="MT",]
+x = x[!grepl("PATCH", x$chr),]
+x = x[!is.na(x$hgnc),]
+x$chr = sapply(gsub("CHR_HSCHR", "", x$chr), function(el){
+  unlist(strsplit(el, "_"))[1]
+})
+x$chr = gsub("HSCHR", "", x$chr)
+
+sequences = getSeq(BSgenome.Hsapiens.UCSC.hg19, names = paste0("chr", dropNA(x$chr)), start = dropNA(x$start-3000), end = dropNA(x$start+3000), strand = ifelse(dropNA(x$strand)<0, "-", "+"))
+sequences
+```
+
+```{r}
+jaspar_dn = motifEnrichment(sequences, bg.jaspar)
+hocomoco_dn = motifEnrichment(sequences , bg.hocomoco)
+```
+
+
+```{r}
+jaspar_dn.rep = groupReport(jaspar_dn)
+hocomoco_dn.rep = groupReport(hocomoco_dn)
+
+f=function(x, n=16){
+  x = substr(x, 1, (nchar(x)-n))
+  return(x)
+}
+
+hocomoco_dn.rep@d$target = unlist(lapply(hocomoco_dn.rep$target, f))
+hocomoco_dn.rep@d$id = unlist(lapply(hocomoco_dn.rep$id, f))
+hocomoco_dn.rep
+
+'plot(jaspar_dn.rep[order(jaspar_dn.rep$p.value)[1:10]], fontsize=12, id.fontsize=10)
+plot(hocomoco_dn.rep[order(hocomoco_dn.rep$p.value)[1:10]], fontsize=12, id.fontsize=10)'
+```
+
+```{r}
+d = as.data.frame(jaspar_dn.rep@d[1:5,])
+d$raw.score = signif(d$raw.score, 3)
+d$padj = p.adjust(d$p.value, method = "BH")
+d$padj = signif(d$padj, 3)
+d$top.motif.prop = paste(signif(100*d$top.motif.prop, 3), "%")
+df = data.frame(x = unlist(lapply(c(1,2,3,4), rep, times = 5)), y = rep(-d$rank, times = 4), label = c(d$target, d$raw.score, d$padj, d$top.motif.prop))
+p = ggplot(df, aes(x = x, y = y, label = label)) +
+  geom_text(hjust = 0) +
+  scale_y_continuous(limits = c(-5.4, -0.6), expand = c(0,0)) +
+  scale_x_continuous(limits = c(1, 5), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+
+df = data.frame(x = c(1, 2, 3, 4, 5), y = c(0,0,0,0,0), label = c("Motif", "TF", "Score", "Adj. p-value", "In top motifs"), hjust = c(0.5, 0, 0, 0, 0))
+
+p2 = ggplot(df, aes(x = x, y = y, label = label, hjust = hjust)) +
+  geom_text(fontface = "bold") +
+  scale_x_continuous(limits = c(0, 6), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+```
+```{r}
+Fig2jaspar_dn = ggarrange(p2, ggarrange(ggarrange(plotlist = lapply(jaspar_dn.rep$pwms[1:5], function(X){
+  ggseqlogo(X$pfm) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+}), ncol = 1), p, ncol = 2, widths = c(2, 4)), ncol = 1, heights = c(1,6))
+```
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(Fig2jaspar_dn, file = "Fig2jaspar_dn.Rdata")
+ggsave(Fig2jaspar_dn, filename = "Fig2jaspar_dn.png", width = 8, height = 5, dpi = 400)
+write.csv(x = jaspar_dn.rep@d, file = "jaspar_dn.csv")
+```
+
+
+```{r}
+d = as.data.frame(hocomoco_dn.rep@d[1:5,])
+d$raw.score = signif(d$raw.score, 3)
+d$padj = p.adjust(d$p.value, method = "BH")
+d$padj = signif(d$padj, 3)
+d$top.motif.prop = paste(signif(100*d$top.motif.prop, 3), "%")
+df = data.frame(x = unlist(lapply(c(1,2,3,4), rep, times = 5)), y = rep(-d$rank, times = 4), label = c(d$target, d$raw.score, d$padj, d$top.motif.prop))
+p = ggplot(df, aes(x = x, y = y, label = label)) +
+  geom_text(hjust = 0) +
+  scale_y_continuous(limits = c(-5.4, -0.6), expand = c(0,0)) +
+  scale_x_continuous(limits = c(1, 5), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+
+df = data.frame(x = c(1, 2, 3, 4, 5), y = c(0,0,0,0,0), label = c("Motif", "TF", "Score", "Adj. p-value", "In top motifs"), hjust = c(0.5, 0, 0, 0, 0))
+
+p2 = ggplot(df, aes(x = x, y = y, label = label, hjust = hjust)) +
+  geom_text(fontface = "bold") +
+  scale_x_continuous(limits = c(0, 6), expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.line.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y=element_blank())
+```
+
+```{r}
+Fig2shocomoco_dn = ggarrange(p2, ggarrange(ggarrange(plotlist = lapply(hocomoco_dn.rep$pwms[1:5], function(X){
+  ggseqlogo(X$pfm) + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+}), ncol = 1), p, ncol = 2, widths = c(2, 4)), ncol = 1, heights = c(1,6))
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(Fig2shocomoco_dn, file = "Fig2shocomoco_dn.Rdata")
+ggsave(Fig2shocomoco_dn, filename = "Fig2shocomoco_dn.png", width = 8, height = 5, dpi = 400)
+write.csv(x = hocomoco_dn.rep@d, file = "hocomoco_dn.csv")
+```
+
+```{r}
+setwd(paste0(wd, "/dt"))
+save(file = "PWMEnrich_res.rdata", hocomoco_dn, hocomoco_up, jaspar_up, jaspar_dn)
+```
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "PWMEnrich_res.rdata")
+```
+
+
+```{r}
+tf=getBM(c("ensembl_gene_id","hgnc_symbol"),filters="go",values="GO:0003700",mart=ensembl)
+
+tf
+```
+
+
+```{r}
+TF = list()
+TF$DEGs = intersect(res[!res$gr=="nc","hgnc"], tf$hgnc_symbol)
+TF
+```
+
+```{r}
+library(rvest)
+x = unique(c(hocomoco_dn.rep$target[p.adjust(hocomoco_dn.rep$p.value, method = "BH")<0.05],hocomoco_up.rep$target[p.adjust(hocomoco_dn.rep$p.value, method = "BH")<0.05]))
+x = HGNChelper::checkGeneSymbols(x)
+
+X = list()
+for(el in x$x){
+  X[[el]] = html_text(html_nodes(read_html(paste0("https://www.genecards.org/Search/Keyword?queryString=", el)),"td[class='gc-gene-symbol gc-highlight symbol-col'] a"))
+}
+
+x$web = sapply(X, function(el){el[1]})
+x$nn = x$Suggested.Symbol
+x$nn[grepl(" ///", x$nn)] = NA
+x$nn[is.na(x$nn)] = x$web[is.na(x$nn)]
+TF$hocomoco = x$nn
+
+#table(unlist(TF))[order(table(unlist(TF)), decreasing = T)]
+```
+
+
+```{r}
+x = unique(c(jaspar_dn.rep$target[p.adjust(jaspar_dn.rep$p.value, method = "BH")<0.05],jaspar_up.rep$target[p.adjust(jaspar_dn.rep$p.value, method = "BH")<0.05]))
+x = HGNChelper::checkGeneSymbols(x)
+
+X = list()
+for(el in x$x){
+  X[[el]] = html_text(html_nodes(read_html(paste0("https://www.genecards.org/Search/Keyword?queryString=", el)),"td[class='gc-gene-symbol gc-highlight symbol-col'] a"))
+}
+
+x$web = sapply(X, function(el){el[1]})
+x$nn = x$Suggested.Symbol
+x$nn[grepl(" ///", x$nn)] = NA
+x$nn[is.na(x$nn)] = x$web[is.na(x$nn)]
+TF$jaspar = x$nn
+
+table(unlist(TF))[order(table(unlist(TF)), decreasing = T)]
+```
+
+```{r}
+x = as.character(c3.res[c3.res$padj<0.05,]$pathway)
+x = x[!grepl("UNKNOWN", x)]
+x = sapply(x, function(el){
+  el = unlist(strsplit(el, "_"))
+  if(length(el) < 3){
+    return(el[1])
+  } else {
+    return(el[2])
+  }
+})
+X = list()
+for(el in x){
+  X[[el]] = html_text(html_nodes(read_html(paste0("https://www.genecards.org/Search/Keyword?queryString=", el)),"td[class='gc-gene-symbol gc-highlight symbol-col'] a"))
+}
+
+
+```
+
+```{r}
+TF$c3 = sapply(X, function(el){el[1]})
+```
+
+```{r}
+x = as.character(enc.res[enc.res$padj<0.05,]$pathway)
+x = x[!grepl("UNKNOWN", x)]
+x = sapply(x, function(el){
+  el = unlist(strsplit(el, "_"))
+  if(length(el) < 3){
+    return(el[1])
+  } else {
+    return(el[2])
+  }
+})
+X = list()
+for(el in x){
+  X[[el]] = html_text(html_nodes(read_html(paste0("https://www.genecards.org/Search/Keyword?queryString=", el)),"td[class='gc-gene-symbol gc-highlight symbol-col'] a"))
+}
+
+
+```
+
+```{r}
+TF$enc = sapply(X, function(el){el[1]})
+```
+
+
+```{r}
+names(table(unlist(TF))[table(unlist(TF))>2])
+```
+
+
+
+```{r}
+#RTN
+```
+
+```{r}
+library(RTN)
+library(RTNsurvival)
+```
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "nexp_epi.Rdata")
+```
+
+
+
+
+
+
+```{r}
+X = nexp[rownames(res),]
+colnames(X)=tolower(substr(colnames(X), 1,12))
+#X = X[!rowMedians(as.matrix(X))<10,]
+#X = filterGenes(X)
+
+dim(X)
+x1=trl[(match(rownames(X), trl$hgnc_symbol)),]
+rownames(x1)=rownames(X)
+x1=x1[,c("hgnc_symbol", "entrezgene_id", "hgnc_symbol")]
+colnames(x1)=c("PROBEID", "ENTREZ", "SYMBOL")
+X=X[!is.na(x1$PROBEID),]
+x1=x1[!is.na(x1$PROBEID),]
+
+
+
+x2=res$log2FoldChange
+names(x2)=rownames(res)
+
+
+x3=data.frame(row.names = names(x2), PROBEID = names(x2), SYMBOL = names(x2))
+
+m = intersect(unique(c(tf$hgnc_symbol, names(unlist(TF)))), rownames(X))
+
+'f=function(x, n=16){
+  x = substr(x, 1, (nchar(x)-n))
+  return(x)
+}
+m=unlist(lapply(colnames(bg.hocomoco$bg.sd), f))
+
+x=match(rownames(res[!res$gr=="nc",]), tf$hgnc_symbol)
+x=x[!is.na(x)]
+m=c(m, as.character(tf[x,"hgnc_symbol"]))
+m=unique(c(m, toupper(unique(unlist(strsplit(colnames(bg.jaspar$bg.sd), "::"))))))'
+
+x4=x1[m,]
+x4=x4[!is.na(x4$PROBEID),]
+x4=as.character(x4$PROBEID)
+names(x4)=x4
+
+x5=rownames(res[!res$gr=="nc",])
+
+epi4rtn=list(gexp=X, gexpIDs=x1, pheno=x2, phenoIDs=x3, hits=x5, tfs=x4)
+```
+
+```{r}
+epi4rtn$tfs[names(table(unlist(TF))[table(unlist(TF))>2])]
+```
+
+
+
+```{r}
+tfs <- epi4rtn$tfs[names(table(unlist(TF))[table(unlist(TF))>2])]
+tfs = tfs[!is.na(tfs)]
+
+rtni <- tni.constructor(expData=epi4rtn$gexp, regulatoryElements=tfs, rowAnnotation=epi4rtn$gexpIDs)
+
+rtni <- tni.permutation(rtni, verbose = T, pValueCutoff=0.05, pAdjustMethod="BH", nPermutations = 10000)
+
+rtni <- tni.bootstrap(rtni)
+
+rtni <- tni.dpi.filter(rtni)
+```
+
+```{r}
+setwd(paste0(wd, "/dt"))
+save(rtni, file = "rtni.Rdata")
+```
+
+
+```{r}
+tni.regulon.summary(rtni, regulatoryElements = tfs)
+```
+
+```{r}
+#g = tni.graph(rtni, regulatoryElements = c("STAT5B","REST","RFX1"))
+```
+
+```{r}
+'library(RedeR)
+rdp <- RedPort()
+calld(rdp)
+addGraph(rdp, g, layout=NULL)
+addLegend.color(rdp, g, type="edge")
+addLegend.shape(rdp, g)
+relax(rdp, ps = TRUE)'
+```
+
+
+
+
+
+
+
+```{r}
+rtna <- tni2tna.preprocess(object=rtni, 
+                         phenotype=epi4rtn$pheno, 
+                         hits=epi4rtn$hits, 
+                         phenoIDs=epi4rtn$phenoIDs
+                         )
+rtna <- tna.mra(rtna)
+#rtna <- tna.overlap(rtna)
+
+#rtna <- tna.gsea1(rtna, stepFilter=FALSE, nPermutations=100)
+#tna.plot.gsea1(rtna, file="tna_gsea1", labPheno="abs(log2) diff. expression")
+
+
+
+
+rtna <- tna.gsea2(rtna, tfs = unique(tfs), nPermutations=1000)
+#rtna <- tna.gsea2(rtna, tfs = "REST", nPermutations=1000)
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+tna.plot.gsea2(rtna, labPheno="log2(fold change)", tfs="REST", alpha = 0.5, plotpdf = T, width = 6, height = 4.5, ylabPanels = c("Seizure history", "Regulon", "Enrichment score"), autoformat = T)
+
+pdftools::pdf_convert("tna_gsea2_REST.pdf", format = "png", dpi = 600)
+
+Fig2RTNGSEA = rasterGrob(png::readPNG('tna_gsea2_REST_1.png'))
+```
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+write.csv(x = (tna.get(rtna, what="gsea2", ntop = -1)$differential)[order(abs(tna.get(rtna, what="gsea2", ntop = -1)$differential$Observed.Score), decreasing = T),], file = "TF_RTN1.csv")
+
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig2RTNGSEA, file = "Fig2RTNGSEA.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2RTNGSEA, filename = "Fig2RTNGSEA.png", width = 8, height = 6, dpi = 400)
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\rtn")
+X=cli[tolower(substr(colnames(rtni@gexp),1,12)),]
+rownames(X)=colnames(rtni@gexp)
+X=X[,c("SO", "vital_status", "age_at_initial_pathologic_diagnosis", "neoplasm_histologic_grade", "histological_type", "seizure_history", "IDH.status", "X1p.19q.codeletion")]
+X$SO[X$SO<0]=0
+X$vital_status=as.numeric(X$vital_status=="dead")
+colnames(X)=c("time", "event", "Age", "Grade", "histology", "GAE", "IDHmut", "Codel1p19q")
+X$Grade=as.numeric(X$Grade=="g3")+2
+X$G2=0
+X$G2[X$Grade==2]=1
+X$G3=0
+X$G3[X$Grade==3]=1
+X$Histology=1
+X$Histology[X$histology=="oligoastrocytoma"]=2
+X$Histology[X$histology=="astrocytoma"]=3
+X$OD=0
+X$OD[X$Histology==1]=1
+X$OA=0
+X$OA[X$Histology==2]=1
+X$AS=0
+X$AS[X$Histology==3]=1
+X=X[,!colnames(X)=="histology"]
+X$GAE=as.numeric(X$GAE=="yes")
+X$IDHmut=as.numeric(X$IDHmut=="Mutant")
+X$Codel1p19q=as.numeric(X$Codel1p19q=="codel")
+
+library(RTNsurvival)
+
+rtns <- tni2tnsPreprocess(rtni, X, keycovar = c("Grade","Age","Histology"), time = 1, event = 2)
+
+rtns <- tnsGSEA2(rtns, verbose = FALSE)
+
+rtns <- tnsCox(rtns)
+
+rtns <- tnsKM(rtns)
+```
+
+```{r}
+rtns <- tnsKM(rtns, sections = 2)
+```
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+tnsPlotKM(rtns, regs="REST", attribs = list(c("G2","G3"),c("OD","AS"),c("IDHmut","Codel1p19q")), width = 6, height = 4.5, plotpdf = T, xlab = "Years")
+
+pdftools::pdf_convert("survplot_REST.pdf", format = "png", dpi = 600)
+
+Fig2RTNKM = rasterGrob(png::readPNG('survplot_REST_1.png'))
+```
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig2RTNKM, file = "Fig2RTNKM.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2RTNKM, filename = "Fig2RTNKM.png", width = 8, height = 6, dpi = 400)
+```
+
+
+```{r}
+#ChIPseq
+```
+
+```{r}
+#rm(list = ls())
+#library(Rsamtools)
+#library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+library(ENCODExplorer)
+```
+
+
+```{r}
+encode_df <- get_encode_df()
+query_results <- as.data.frame(queryEncode(df=encode_df, organism = "Homo sapiens", target = "REST", file_format = "bam"))
+query_controls <- as.data.frame(queryEncode(df=encode_df, organism = "Homo sapiens", file_format = "bam"))
+```
+
+```{r}
+x = data.frame(accession = rep("ENCSR000BJQ", 4),
+               file_accession = c("ENCFF000RJQ", "ENCFF000RJP","ENCFF000RJW", "ENCFF000RJX"),
+               output_type = rep("alignment", 4),
+               assembly = rep("hg19", 4),
+               target = rep("REST", 4),
+               biosample_name = rep("U87", 4),
+               controls = rep("ENCSR000BJV",4),
+               status = rep("revoked",4)
+               )
+for(el in colnames(query_results)){
+  if(sum(colnames(x)==el)==0){
+    X = data.frame(a = rep(NA, 4))
+    colnames(X) = el
+    x = cbind(x, X)
+  }
+}
+
+x = x[,colnames(query_results)]
+
+query_results = rbind(query_results, x)
+
+x = data.frame(accession = rep("ENCSR000BJV", 4),
+               file_accession = c("ENCFF000RKZ", "ENCFF000RLA","ENCFF000RKW", "ENCFF000RKX"),
+               output_type = rep("alignment", 4),
+               assembly = rep("hg19", 4),
+               target = rep(NA, 4),
+               biosample_name = rep("U87", 4),
+               controls = rep(NA,4),
+               status = rep("revoked",4)
+               )
+for(el in colnames(query_controls)){
+  if(sum(colnames(x)==el)==0){
+    X = data.frame(a = rep(NA, 4))
+    colnames(X) = el
+    x = cbind(x, X)
+  }
+}
+
+x = x[,colnames(query_controls)]
+
+query_controls = rbind(query_controls, x)
+```
+
+
+
+
+```{r}
+f = function(df){
+  for(el in colnames(df)){
+    if(typeof(df[,el])=="character"){
+      df[,el] = as.factor(df[,el])
+    }
+  }
+  return(df)
+}
+
+query_controls = f(query_controls)
+query_results = f(query_results)
+```
+
+
+```{r}
+dim(query_results)
+for(el in unique(query_results$biosample_name)){
+  if(sum(grepl("GRCh38", query_results[query_results$biosample_name==el,"assembly"]))>0){
+    query_results = query_results[(!(query_results$biosample_name==el))|((query_results$biosample_name==el)&(query_results$assembly=="GRCh38")),]
+    query_controls = query_controls[(!(query_controls$biosample_name==el))|((query_controls$biosample_name==el)&(query_controls$assembly=="GRCh38")),]
+  }
+}
+
+for(el in unique(query_results$biosample_name)){
+  if(sum(grepl("alignments", query_results[query_results$biosample_name==el,"output_type"]))>0){
+    query_results = query_results[(!(query_results$biosample_name==el))|((query_results$biosample_name==el)&(query_results$output_type=="alignments")),]
+  }
+}
+dim(query_results)
+```
+
+```{r}
+for(el in unique(query_controls$biosample_name)){
+  if(sum(grepl("alignments", query_controls[query_controls$biosample_name==el,"output_type"]))>0){
+    query_controls = query_controls[(!(query_controls$biosample_name==el))|((query_controls$biosample_name==el)&(query_controls$output_type=="alignments")),]
+  }
+}
+```
+
+
+```{r}
+df = data.frame(experiment = unique(query_results$accession),
+                row.names = unique(query_results$accession))
+x = NULL
+for(el in rownames(df)){
+  x = c(x, as.character(unique(query_results[match(el, query_results$accession),]$biosample_name)))
+}
+df$cell = as.factor(x)
+
+x = NULL
+for(el in rownames(df)){
+  x = c(x, paste(query_results[query_results$accession == el,]$file_accession, sep = ",", collapse = ";"))
+}
+df$chip = x
+
+x = NULL
+for(el in rownames(df)){
+  X = query_results[query_results$accession==el,]$controls
+  y = rep(F, times = length(query_controls$accession))
+    for(el in X){
+      y[query_controls$accession==el] = T
+    }
+  x = c(x, paste(query_controls[y,]$file_accession, sep = ",", collapse = ";"))
+}
+df$con = x
+df
+
+
+f = function(x){
+  x = as.character(paste(unique(x), sep = ",", collapse = ";"))
+}
+
+
+meta = as.data.frame(df)
+
+meta
+```
+
+
+
+
+
+
+```{r}
+'setwd(paste0(wd, "/chipREST/bams"))
+X = list.files()
+x = unlist(strsplit(c ( meta$chip, meta$con ), ";"))
+for(el in X){
+  el = gsub(".bam", "", el)
+  x = x[!(x==el)]
+}
+x'
+```
+
+
+```{r}
+'X = query_controls$href [match(x, query_controls$file_accession)]
+X = paste("https://www.encodeproject.org", X, sep = "")
+names(X) = x
+X
+for(el in x){
+  download.file(url=X[el],
+              destfile = paste0(wd, "/chipREST/bams/", el, ".bam"))
+}'
+```
+
+
+
+
+```{r}
+'setwd(paste0(wd, "/chipREST/bams"))
+x = c(unlist(strsplit(as.character(df$chip),";")),unlist(strsplit(as.character(df$con),";")))
+X = list.files()
+for(el in x){
+  if (sum(grepl(el, X[!(grepl("bai", X))]))==0){
+    x = x[!x==el]
+  }
+}
+
+while(length(x)>0){
+  if(sum(grepl(paste(el, ".bam.bai", sep = ""), X))==0){
+    indexBam(file=paste(x[1], ".bam", sep=""))
+  }
+  x = x[-1]
+  print(length(x))
+}'
+```
+
+
+
+
+```{r}
+'setwd(paste0(wd, "/chipREST/bams"))
+for(el in unique(meta$cell)){
+  x = unlist(strsplit(meta[meta$cell==el,]$chip, ";"))
+  if(length(x)>1){
+    mergeBam(
+      files = paste(x, ".bam", sep = ""),
+      destination = paste("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bam\\", el, "chip.bam", sep = "")
+    )
+  } else if (length(x)==1) {
+    file.copy(from = paste(x, ".bam", sep = ""),
+                to =paste("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bam\\", el, "chip.bam", sep = ""))
+  }
+}
+
+setwd(paste0(wd, "/chipREST/bams"))
+for(el in unique(meta$cell)){
+  x = unlist(strsplit(meta[meta$cell==el,]$con, ";"))
+  if(length(x)>1){
+    mergeBam(
+      files = paste(x, ".bam", sep = ""),
+      destination = paste("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bam\\", el, "con.bam", sep = "")
+    )
+  } else if (length(x)==1) {
+    file.copy(from = paste(x, ".bam", sep = ""),
+                to =paste("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bam\\", el, "con.bam", sep = ""))
+  }
+}
+'
+```
+
+```{r}
+'library(exomePeak)
+
+setwd(paste0(wd, "/chipREST/bams"))
+for(el in rev(rownames(meta))){
+  x=exomepeak(IP_BAM = paste(unlist(strsplit(as.character(meta[el,"chip"]), ";")), sep="", ".bam"),
+              INPUT_BAM = paste(unlist(strsplit(as.character(meta[el,"con"]), ";")), sep="", ".bam"),
+              GENOME = ifelse(meta[el,"cell"]=="neural cell", "hg19", "hg38"),
+              OUTPUT_DIR = "D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\beds\\exomePeak",
+              EXPERIMENT_NAME = el,
+              PEAK_CUTOFF_FDR = 0.05,
+              TESTING_MODE = 100,
+              UCSC_TABLE_NAME = "ncbiRefSeqCurated"
+              )
+  assign(paste("peaks", el, sep=""), x)
+}'
+```
+
+
+
+```{r}
+'library(mosaics)
+
+setwd(paste0(wd, "/chipREST/bam"))
+x = unique(meta$cell)
+for(el in x){
+  constructBins( infile=paste(el, "chip.bam", sep=""), 
+    fileFormat="bam",
+    outfileLoc="D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bin", 
+    byChr=FALSE, useChrfile=FALSE, chrfile=NULL, excludeChr=NULL, 
+    PET=FALSE, fragLen=200, binSize=200, capping=0 )
+  constructBins( infile=paste(el, "con.bam", sep=""), 
+    fileFormat="bam",
+    outfileLoc="D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bin", 
+    byChr=FALSE, useChrfile=FALSE, chrfile=NULL, excludeChr=NULL, 
+    PET=FALSE, fragLen=200, binSize=200, capping=0 )
+}'
+
+
+```
+
+```{r}
+'for(el in rev(unique(meta$cell))){
+  setwd(paste0(wd, "/chipREST/bin"))
+  binTFBS <- readBins( type=c("chip","input"),
+                       fileName=c(
+                         paste(el, "chip.bam_fragL200_bin200.txt", sep = ""),
+                         paste(el, "con.bam_fragL200_bin200.txt", sep = "")))
+  fitTFBS <- mosaicsFit( binTFBS, analysisType="TS", bgEst="automatic" )
+  peakTFBS <- mosaicsPeak( fitTFBS, signalModel="2S", FDR=0.05, maxgap=200, minsize=10, thres=5 )
+  setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bed")
+  export( peakTFBS, type="txt", filename=paste(el, "peakTFBS.txt", sep="") )
+  export( peakTFBS, type="bed", filename=paste(el, "peakTFBS.bed", sep="") )
+  #export( peakTFBS, type="gff", filename=paste(el, "peakTFBS.gff", sep="") )
+  setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\bam")
+  peakHM <- extractReads( peakTFBS,
+    chipFile=paste(el, "chip.bam", sep = ""),
+    chipFileFormat="bam", chipPET=FALSE, chipFragLen=200,
+    controlFile=paste(el, "con.bam", sep = ""), 
+    controlFileFormat="bam", controlPET=FALSE, controlFragLen=200)
+  peakHM <- findSummit( peakHM )
+  peakHM <- adjustBoundary( peakHM )
+  peakHM <- filterPeak( peakHM )
+  setwd(paste0(wd, "/chipREST/bed"))
+  export( peakHM, type="narrowPeak", filename=paste(el, "peakTFBS.narrowPeak", sep=""))
+}'
+```
+
+
+
+```{r}
+'x = data.frame(cell = c("WUM20160909", "WUM20170109"),
+               experiment = c("WUM20160909_REST", "WUM20170109_REST"),
+               chip = c("WUM20160909_REST", "WUM20170109_REST"),
+               con = c("WUM20160909_IN_REST", "WUM20170109_IN_REST"))'
+```
+
+
+
+```{r}
+'setwd("F:/Symfonia_REST")
+x = list.files()
+x = x[grepl("\\.bam", x)]
+x = x[!grepl(".bam.bai", x)]
+x = x[!grepl("256_q20", x)]
+x = gsub(".bam", "", x)
+x = x[!grepl("_IN_REST", x)]
+x = gsub("_REST", "", x)'
+#cat(x[grepl("_IN_REST", x)], sep = '", "')
+#cat(x[!grepl("_IN_REST", x)], sep = '", "')
+```
+
+```{r}
+library(ChIPseeker)
+setwd(paste0(wd, "/chipREST/bed"))
+X = list.files()
+X = X[grepl(".narrowPeak", X)]
+x = gsub("peakTFBS.narrowPeak", "", X)
+x = gsub("_REST_peaks.narrowPeak", "", x)
+x = gsub("_REST_0.1_peaks.narrowPeak", "", x)
+x = gsub(".narrowPeak", "", x)
+#x = x[sapply(x, function(X){sum(meta$cell==X)})>0]
+#X = c(X, "ENCFF002COA.bed")
+#x = c(x, "U87")
+#x = gsub(".bed.gz", "", x)
+X = lapply(X, readPeakFile, header = F)
+names(X) = x
+```
+
+
+```{r}
+chips = X
+#chips = chips[as.character(meta$cell)]
+#chips = chips[!is.na(names(chips))]
+'beds = list()
+names = NULL
+for(el in unique(meta$cell)){
+  setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\beds")
+  if(length(unlist(strsplit(as.character(meta[meta$cell==el,]$experiment), ";")))>1){
+    l = MakeConsensusSet(X[unlist(strsplit(as.character(meta[meta$cell==el,]$experiment),";"))])
+    l = l[rowMeans(as.matrix(l@elementMetadata))>=0.5]
+  } else {
+    l = X[[unlist(strsplit(as.character(meta[meta$cell==el,]$experiment),";"))]]
+  }
+  setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\cs")
+  export.bed(l, paste(el, ".bed", sep=""))
+  chips[[el]] = l
+  beds[[el]] = paste("D:\\Files\\Main_directory\\Nencki\\Epi\\chipREST\\cs\\", el, ".bed", sep="")
+}'
+```
+
+```{r}
+meta$hg = query_results[match(rownames(meta), query_results$accession),"assembly"]
+```
+
+
+
+```{r}
+chips = chips[sapply(chips, length) > 300]
+```
+
+
+
+```{r}
+x = meta$hg[match(names(chips), meta$cell)]
+x[is.na(x)] = "GRCh38"
+names(x) = names(chips)
+```
+
+```{r}
+
+txdb19 <- TxDb.Hsapiens.UCSC.hg19.knownGene
+
+txdb38 <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+promoter19 <- getPromoters(TxDb=txdb19, upstream=3000, downstream=3000)
+promoter38 <- getPromoters(TxDb=txdb38, upstream=3000, downstream=3000)
+
+tagMatrixList = list()
+for(el in names(chips)){
+  if (x[el]=="hg19") {
+    tagMatrixList[[el]] = getTagMatrix(chips[[el]], windows = promoter19)
+  } else {
+    tagMatrixList[[el]] = getTagMatrix(chips[[el]], windows = promoter38)
+  }
+  
+}
+
+
+```
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+Fig2s_AvgProf = plotAvgProf(tagMatrixList, xlim=c(-3000, 3000)) + theme_classic() + labs(color = "ChIPseq experiment")
+save(Fig2s_AvgProf, file = "Fig2s_AvgProf.Rdata")
+ggsave(Fig2s_AvgProf, filename = "Fig2s_AvgProf.png", width = 8, height = 5, dpi = 400)
+```
+
+
+
+
+
+```{r}
+anno = list()
+for(el in names(chips)){
+  if (x[el]=="hg19") {
+    anno[[el]] = annotatePeak(chips[[el]], tssRegion=c(-3000, 3000), TxDb=txdb19, annoDb="org.Hs.eg.db")
+  } else {
+    anno[[el]] = annotatePeak(chips[[el]], tssRegion=c(-3000, 3000), TxDb=txdb38, annoDb="org.Hs.eg.db")
+  }
+  
+}
+```
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+Fig2s_plotDistToTSS = plotDistToTSS(anno) + theme_classic() + theme(legend.position = "none")
+ggsave(Fig2s_plotDistToTSS, filename = "Fig2s_plotDistToTSS.png", width = 8, height = 5, dpi = 400)
+save(Fig2s_plotDistToTSS, file = "Fig2s_plotDistToTSS.Rdata")
+```
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+Fig2s_plotAnnoBar = plotAnnoBar(anno) + theme_classic()
+ggsave(Fig2s_plotAnnoBar, filename = "Fig2s_plotAnnoBar.png", width = 8, height = 5, dpi = 400)
+save(Fig2s_plotAnnoBar, file = "Fig2s_plotAnnoBar.Rdata")
+```
+
+```{r}
+dropNA = function(x){
+  x = x[!is.na(x)]
+  return(x)
+}
+
+f = function(x){
+  x = as.data.frame(x)
+  #x = x[abs(x$distanceToTSS)<10000,]
+  x = x[(grepl("promoter", tolower(x$annotation)))|(grepl("intron", tolower(x$annotation)))|(grepl("exon", tolower(x$annotation))),]
+  x = dropNA(unique(as.character(x$SYMBOL)))
+  return(x)
+}
+
+targets = lapply(anno, f)
+
+names(targets) = gsub("-", "_", names(targets))
+names(targets) = gsub(" ", "_", names(targets))
+
+targets = targets[!names(targets) == "WUM20160923"]
+```
+
+
+```{r}
+sigg = res
+sigg$gr[!sigg$gr == "Upregulated"] = "notup"
+```
+
+
+```{r}
+for(el in 1: length(targets)){
+  sigg[[names(targets[el])]] = ifelse(sigg$hgnc %in% targets[[el]], "yes", "no")
+}
+```
+
+
+
+```{r}
+overlap = data.frame(feat = names(targets),
+                     name = names(targets))
+rownames(overlap)=overlap$feat
+
+nn=NULL
+u=NULL
+d=NULL
+x=NULL
+for(el in overlap$feat){
+  counts=as.data.frame(xtabs(as.formula(paste("~ gr + `", el, "`", sep="")), data = sigg))
+  table = xtabs(as.formula(paste("Freq ~ gr + `", el, "`", sep="")), data=counts)
+  table = table[c("Upregulated", "notup"),c("yes", "no")]
+  #table = table[,order(table[2,],decreasing = F)]
+  nn = c(nn, el)
+  FT=fisher.test(table, conf.level = 0.9)
+  u = c(u, table["Upregulated",])
+  d = c(d, table["notup",])
+  x = c(x, paste(el, colnames(table), sep = "_"))
+  overlap[el,"p.epi"]=FT$p.value
+  overlap[el,"OR.epi"]=FT$estimate
+  overlap[el,"lCI.epi"]=FT$conf.int[1]
+  overlap[el,"uCI.epi"]=FT$conf.int[2]
+}
+
+overlap$OR.epi = log2(overlap$OR.epi)
+overlap$lCI.epi = log2(overlap$lCI.epi)
+overlap$uCI.epi = log2(overlap$uCI.epi)
+overlap$padj.epi = p.adjust(overlap$p.epi, method = "BH")
+overlap$lab = paste("adj. p = ", signif(overlap$padj.epi, 3), sep = "")
+overlap$labpos=-2
+overlap$nn = with(overlap, reorder(nn, OR.epi))
+
+fp <- ggplot(data=overlap, aes(x=nn, y=OR.epi, ymin=lCI.epi, ymax=uCI.epi)) +
+        geom_pointrange() +
+        geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+        geom_text(data=overlap, aes(x = nn, y = labpos, label = lab, hjust=0, colour = "blue")) + 
+        scale_color_manual(values=c("blue")) +
+        coord_flip() +  # flip coordinates (puts labels on y axis)
+        labs(title="Overlap of associated genes", x=NULL, y = "Upregulated with seizures log2 OR (90% CI)\n") +
+        theme_classic() +  # use a white background
+        theme(legend.position="none")
+
+fp
+
+Fig2_RESTover = fp
+```
+```{r}
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2_RESTover, filename = "Fig2_RESTover.png", width = 8, height = 5, dpi = 400)
+save(Fig2_RESTover, file = "Fig2_RESTover.Rdata")
+```
+
+
+```{r}
+#save(targets, file = "REST_targets.Rdata")
+load(file = "REST_targets.Rdata")
+```
+
+```{r}
+library(cluster)
+library(msigdbr)
+```
+
+
+```{r}
+dropNA = function(x){
+  x = x[!is.na(x)]
+  return(x)
+}
+
+flip <- function(x){
+  x = as.matrix(x)
+  y = t(apply(x, 2, rev))
+  rownames(y)=colnames(x)
+  colnames(y)=rev(rownames(x))
+  return (y)
+}
+
+wd = getwd()
+
+c3 = msigdbr(species = "Homo sapiens", category = "C3", subcategory = "TFT:TFT_Legacy")
+#rbind(msigdbr(species = "Homo sapiens", category = "C3", subcategory = c("TFT:GTRD")), msigdbr(species = "Homo sapiens", category = "C3", subcategory = c("TFT:TFT_Legacy")))
+c3 = c3 %>% split(x = .$gene_symbol, f = .$gs_name)
+
+
+```
+
+
+```{r}
+targets$Hsigdb_C3 = c3$NRSF_01
+x = unique(unlist(targets))
+
+df = sapply(targets, function(el){
+  ifelse((x %in% el), 1, 0)
+})
+
+rownames(df) = x
+
+df = flip(df)
+df[1:10,rev(colnames(df))[1:10]]
+
+df = df[,colSums(df)>1]
+
+x = rownames(df)
+df = as.data.frame(ifelse(df==1, "yes", "no"))
+rownames(df) = x
+
+df[1:10,rev(colnames(df))[1:10]]
+```
+
+
+
+
+```{r}
+library(FactoMineR)
+```
+
+```{r}
+mca = MCA(df, graph = F, ncp = 20)
+```
+
+```{r}
+plot(mca, invisible = "var")
+```
+
+
+
+
+```{r}
+df = data.frame(MCA1 = mca$ind$coord[,"Dim 1"], MCA2 = mca$ind$coord[,"Dim 2"])
+rownames(df) = rownames(mca$ind$coord)
+df$label = rownames(df)
+
+x = setNames(c("cancer", "stem cell", "stem cell", "stem cell", "cancer", "cancer", "cancer", "cancer", "cancer", "tissue", 'cancer', 'tissue', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'reference'), c('A549', 'GM12878', 'GM23338', 'H1_hESC', 'HCT116', 'HeLa_S3', 'HepG2', 'HL_60', 'K562', 'liver', 'MCF_7', 'neural_cell', 'Panc1', 'PFSK_1', 'SK_N_SH', 'U87_MUT_peaks', 'U87_WT_peaks', 'Pt1Glioma', 'Pt2Glioma', 'Hsigdb_C3'))
+
+df$type = x[df$label]
+
+df
+```
+
+```{r}
+mca$eig["dim 2", "percentage of variance"]
+```
+
+```{r}
+library(ggrepel)
+p = ggplot(data = df) +
+  geom_point(aes(x = MCA1, y = MCA2, color = type), size = 3) + 
+  geom_label_repel(aes(x = MCA1, y = MCA2, label = label, fill = type)) +
+  labs(title = "REST targets in ChIPseq experiments", subtitle = "Multiple Correspondence Analysis",
+       x = paste0("Dimension 1, explains ", signif(mca$eig["dim 1", "percentage of variance"],2), "% of variability"),
+       y = paste0("Dimension 2, explains ", signif(mca$eig["dim 2", "percentage of variance"],2), "% of variability")) +
+  scale_color_manual(values = hcl.colors(length(unique(df$type))), name = "Cell type") +
+  scale_fill_manual(values = alpha(hcl.colors(length(unique(df$type))), 0.3), name = "Cell type") +
+  theme_classic() +
+  theme(axis.line.x = element_blank(), axis.ticks.x = element_blank(), axis.text.x = element_blank(),axis.ticks.y = element_blank(), axis.text.y = element_blank(),  axis.line.y = element_blank(), legend.position = "bottom")
+p
+```
+
+
+```{r}
+Fig2_RESTMCA = p
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2_RESTMCA, filename = "Fig2_RESTMCA.png", width = 8, height = 5, dpi = 400)
+save(Fig2_RESTMCA, file = "Fig2_RESTMCA.Rdata")
+```
+
+
+
+```{r}
+library(ggdendro)
+library(ggplot2)
+df <- dendro_data(X)
+df
+
+
+p <- ggplot(segment(df)) +   geom_segment(aes(x=x, y=y, xend=xend, yend=yend))
+
+df = df$labels
+
+
+x = setNames(c("cancer", "stem cell", "stem cell", "stem cell", "cancer", "cancer", "cancer", "cancer", "cancer", "tissue", 'cancer', 'tissue', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'reference'), c('A549', 'GM12878', 'GM23338', 'H1_hESC', 'HCT116', 'HeLa_S3', 'HepG2', 'HL_60', 'K562', 'liver', 'MCF_7', 'neural_cell', 'Panc1', 'PFSK_1', 'SK_N_SH', 'U87_MUT_peaks', 'U87_WT_peaks', 'Pt1Glioma', 'Pt2Glioma', 'Hsigdb_C3'))
+
+df$type = x[df$label]
+
+df$label = gsub("_peaks", "", df$label)
+
+p = p + geom_text(data=df, aes(label=label, x=x, y=(-0.01), color=type, fontface = ifelse(label %in% c("neural_cell", "U87_MUT", "U87_WT", "Pt1Glioma", "Pt2Glioma"), "bold", "plain")), angle = 90, hjust = 1) + expand_limits(y = -0.3) +
+  scale_color_manual(name = "Cell type", breaks = c("cancer", "stem cell", "tissue", "reference"), values = c("firebrick4", "goldenrod4", "midnightblue", "gray20")) +
+  labs(title = "REST targets in ChIPseq experiments", subtitle = "Hierarchical clustering, method: complete, metric: Gower's") +
+  theme_classic() + theme(axis.line=element_blank(), axis.text=element_blank(), axis.ticks=element_blank(), axis.title=element_blank(), plot.title = element_text(hjust = 0.05), plot.subtitle = element_text(hjust = 0.05))
+  
+
+p
+```
+
+```{r}
+Fig2_RESTClust = p
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2_RESTClust, filename = "Fig2_RESTClust.png", width = 8, height = 5, dpi = 400)
+save(Fig2_RESTClust, file = "Fig2_RESTClust.Rdata")
+```
+
+
+
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "nexp_age.Rdata")
+```
+
+```{r}
+#Fig2_RESTexp = list()
+p = list()
+X = cli
+X$REST = Nexp["REST", match(rownames(cli), tolower(substr(colnames(Nexp),1,12)))]
+X$seizure_history = factor(X$seizure_history, levels = c("yes", "no"))
+levels(X$neoplasm_histologic_grade) = c("G II", "G III", "G IV")
+
+X$IDH.codel.subtype = factor(X$IDH.codel.subtype, levels = c("IDHmut-codel", "IDHmut-non-codel", "IDHwt"))
+
+x = quantile(X$REST, na.rm = T, probs = seq(0,1,0.25))
+x = paste0("Q", sapply(X$REST, function(el){
+  sum(x < el, na.rm = F)
+}))
+x[grepl("NA", x)] = NA
+X$RESTQ = x
+X$RESTQ = factor(X$RESTQ, levels = paste0("Q", 1:4))
+
+p[["epi"]] = ggplot(data = X[!(is.na(X$REST) | is.na(X$seizure_history)),])+
+  geom_violin(aes(x = seizure_history, y = REST, fill = seizure_history)) +
+  geom_boxplot(aes(x = seizure_history, y = REST), width = 0.2) +
+  scale_fill_manual(values = c("#008FFF", "#FF0007")) +
+  theme_classic() + theme(legend.position = "none") + 
+  labs(title = "REST expression and seizure history", subtitle = paste0("p-val. =", signif(res["REST", "pvalue"],3), "; adj. p-val. =", signif(res["REST", "padj"],3)), y = "REST normalized expression level", x = "Seizure history")
+
+
+p[["km"]] = ggsurvplot(survfit(surv ~ RESTQ,data = X), data = X, palette = rev(hcl.colors(4, "RdBu")))$plot +
+  labs(title = "REST expression and survival probability", subtitle = paste0("Cox p-val. =", signif(res["REST", "pvalue_surv"],3), "; adj. p-val. =", signif(res["REST", "padj_surv"],3))) +
+  scale_color_manual(name = "REST expression quantile:", labels = paste0("Q", 1:4), values = rev(hcl.colors(4, "RdBu"))) +
+  theme(legend.position = "top", legend.direction = "horizontal", plot.title = element_text(size=13), plot.subtitle = element_text(size=11), axis.title.x = element_text(size=11), axis.title.y = element_text(size=11), axis.text.x = element_text(size=8), axis.text.y = element_text(size=8), legend.text = element_text(size=8), legend.title = element_text(size=8))
+
+p[["grade"]] = ggplot(data = X[!(is.na(X$REST) | is.na(X$neoplasm_histologic_grade)),])+
+  geom_violin(aes(x = neoplasm_histologic_grade, y = REST, fill = neoplasm_histologic_grade)) +
+  geom_boxplot(aes(x = neoplasm_histologic_grade, y = REST), width = 0.2) +
+  scale_fill_manual(values = c("forestgreen", "pink", "purple")) +
+  theme_classic() + theme(legend.position = "none", text = element_text(size=10)) + 
+  labs(title = "REST expression and WHO grade", subtitle = paste0("p-val. =", signif(res["REST", "pvalue_Grade"],3), "; adj. p-val. =", signif(res["REST", "padj_Grade"],3)), y = "REST normalized expression level", x = "WHO grade")
+
+p[["idh"]] = ggplot(data = X[!(is.na(X$REST) | is.na(X$IDH.codel.subtype)),])+
+  geom_violin(aes(x = IDH.codel.subtype, y = REST, fill = IDH.codel.subtype)) +
+  geom_boxplot(aes(x = IDH.codel.subtype, y = REST), width = 0.2) +
+  scale_fill_manual(values = c("brown", "darkgoldenrod", "cyan")) +
+  theme_classic() + theme(legend.position = "none") + 
+  labs(title = "REST expression and molecular subtype", subtitle = paste0("IDH-mut p-val. =", signif(res["REST", "pvalue_MutIDH"],3), "; adj. p-val. =", signif(res["REST", "padj_MutIDH"],3), "\n1p19q cod. p-val. =", signif(res["REST", "pvalue_Cod1p19q"],3), "; adj. p-val. =", signif(res["REST", "padj_Cod1p19q"],3)), y = "REST normalized expression level", x = "WHO grade")
+
+#p[["idh"]]
+
+ggsave(ggarrange(plotlist = p, nrow = 2, ncol = 2), filename = "t1.png", width = 8, height = 6, dpi = 400)
+```
+```{r}
+Fig2RESTexp = p
+setwd(paste0(wd, "/Figures"))
+ggsave(ggarrange(plotlist = p, nrow = 2, ncol = 2), filename = "Fig2RESTexp.png", width = 8, height = 5, dpi = 400)
+save(Fig2RESTexp, file = "Fig2RESTexp.Rdata")
+```
+
+
+
+
+
+
+
+
+```{r}
+### JUNK BELOW THIS LINE
+```
+
+
+```{r}
+x = setNames(c("cancer", "stem cell", "stem cell", "stem cell", "cancer", "cancer", "cancer", "cancer", "cancer", "tissue", 'cancer', 'tissue', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer', 'cancer'), c('A549', 'GM12878', 'GM23338', 'H1_hESC', 'HCT116', 'HeLa_S3', 'HepG2', 'HL_60', 'K562', 'liver', 'MCF_7', 'neural_cell', 'Panc1', 'PFSK_1', 'SK_N_SH', 'U87_MUT_peaks', 'U87_WT_peaks', 'WUM20160909', 'WUM20170109'))
+
+df$type = x[df$name]
+```
+
+
+
+
+```{r}
+x = c(,,,)
+library(ggrepel)
+p = ggplot(data = df) +
+  geom_point(aes(x = PC1, y = PC2, label = name, color = type), size = 3) + 
+  geom_label_repel(aes(x = PC1, y = PC2, label = name, fill = type)) +
+  labs(title = "REST targets in ChIPseq experiments", subtitle = "Principal Component Analysis", x = paste0("PC1, explains ", signif(100*(apply(as.matrix(df[,grepl("PC", colnames(df))]), 2, var)["PC1"])/(sum(apply(as.matrix(df[,grepl("PC", colnames(df))]), 2, var))),3), "% of variability"), y = paste0("PC2, explains ", signif(100*(apply(as.matrix(df[,grepl("PC", colnames(df))]), 2, var)["PC2"])/(sum(apply(as.matrix(df[,grepl("PC", colnames(df))]), 2, var))),3), "% of variability")) +
+  scale_color_manual(values = hcl.colors(length(unique(df$type))), name = "Cell type") +
+  scale_fill_manual(values = alpha(hcl.colors(length(unique(df$type))), 0.3), name = "Cell type") +
+  theme_classic() +
+  theme(axis.line.x = element_blank(), axis.ticks.x = element_blank(), axis.text.x = element_blank(),axis.ticks.y = element_blank(), axis.text.y = element_blank(),  axis.line.y = element_blank(), legend.position = "bottom")
+p
+```
+
+
+```{r}
+Fig2_RESTPCA = p
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig2_RESTPCA, filename = "Fig2_RESTPCA.png", width = 8, height = 5, dpi = 400)
+save(Fig2_RESTPCA, file = "Fig2_RESTPCA.Rdata")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

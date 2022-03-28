@@ -1,0 +1,5231 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+#EPI
+rm(list = ls())
+set.seed(2019)
+```
+
+```{r}
+library(biomaRt)
+library(DESeq2)
+library(ggplot2)
+library(survminer)
+library(survival)
+library(msigdbr)
+library(fgsea)
+library(grid)
+library(gridGraphics)
+library(limma)
+library(ComplexHeatmap)
+library(circlize)
+library(numbers)
+library(ggrepel)
+library(ipred)
+```
+
+```{r}
+dropNA = function(x){
+  x = x[!is.na(x)]
+  return(x)
+}
+
+flip <- function(x){
+  x = as.matrix(x)
+  y = t(apply(x, 2, rev))
+  rownames(y)=colnames(x)
+  colnames(y)=rev(rownames(x))
+  return (y)
+}
+
+
+```
+
+
+```{r}
+
+
+wd = getwd()
+setwd(paste0(wd, "/dt"))
+load("all.rdata")
+cli$location = ifelse(cli$tumor_location=="supratentorial, temporal lobe", "Temporal", "Other")
+```
+
+```{r}
+mart <- useMart("ENSEMBL_MART_ENSEMBL", host = "ensembl.org")
+ensembl = useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", GRCh = 38)
+trl = getBM(attributes=c("ensembl_gene_id","hgnc_symbol", "entrezgene_id", "start_position", "end_position", "chromosome_name", "strand", "gene_biotype"), mart= ensembl) #"description","phenotype_description", "mim_morbid_description", 
+trl$chromosome_name[nchar(trl$chromosome_name)>3] = gsub("_", "", substr(trl$chromosome_name[nchar(trl$chromosome_name)>3], 10, 11))
+```
+
+
+```{r}
+cli$localization = ifelse(grepl("posterior fossa", tolower(cli$tumor_location)), "Other", ifelse(cli$supratentorial_localization=="cerebral cortex", "Cortical", ifelse(cli$supratentorial_localization=="not listed in medical record", NA, "Other")))
+```
+
+
+
+```{r}
+x = trl[(((grepl("gene", trl$gene_biotype) & (!(grepl("pseudogene", trl$gene_biotype))))) |((grepl("protein_coding", trl$gene_biotype)))),]
+x = x[!x$hgnc_symbol == "",]
+```
+
+
+
+
+
+```{r}
+dim(fSeq)
+Fhseq =  fSeq[order(apply(fSeq, 1, var)[rownames(fSeq)], decreasing = T),]
+Fhseq =  Fhseq[,order(apply(fSeq, 2, sum)[colnames(fSeq)], decreasing = T)]
+dim(Fhseq)
+```
+
+
+```{r}
+Fhseq = Fhseq[!(is.na(match(sapply(rownames(Fhseq), function(el){
+  unlist(strsplit(el, "\\."))[1]
+}), x$ensembl_gene_id))),]
+dim(Fhseq)
+```
+
+
+```{r}
+Fhseq = Fhseq[!(duplicated(x[match(sapply(rownames(Fhseq), function(el){
+  unlist(strsplit(el, "\\."))[1]
+}), x$ensembl_gene_id),"hgnc_symbol"])),]
+
+rownames(Fhseq) = x[match(sapply(rownames(Fhseq), function(el){
+  unlist(strsplit(el, "\\."))[1]
+}), x$ensembl_gene_id), "hgnc_symbol"]
+
+dim(Fhseq)
+```
+```{r}
+Fhseq = Fhseq[,TCGAutils::TCGAsampleSelect(colnames(Fhseq), "01")]
+
+dim(Fhseq)
+
+Fhseq = Fhseq[,!duplicated(substr(colnames(Fhseq), 1,12))]
+
+dim(Fhseq)
+```
+
+
+
+```{r}
+#Differential Expression
+```
+
+
+```{r}
+nl = function(x,OL,NL){
+  x = as.character(x)
+  if(length(OL)==length(NL)){
+    for(el in 1:length(OL)){
+      x[x==(OL[el])]=NL[el]
+    }
+    return(x)
+  } else {
+    print("ERROR!")
+  }
+}
+
+x = cli[as.character(substr(tolower(colnames(Fhseq)),1,12)),c("age_at_initial_pathologic_diagnosis", "karnofsky_performance_score", "seizure_history", "tumor_location", "histological_type", "neoplasm_histologic_grade","IDH.status","X1p.19q.codeletion","MGMT.promoter.status", "TERT.expression.status")]
+
+x$seizure_history = factor(as.numeric(nl(x$seizure_history,
+   OL = c("yes", "no"),
+   NL = c(1, 0))),
+   labels = c("yes", "no"))
+
+x$histological_type = as.numeric(nl(x$histological_type,
+   OL = c("oligodendroglioma", "oligoastrocytoma", "astrocytoma", "glioblastoma"),
+   NL = c(1, 2, 3, 4)))
+
+x$tumor_location = as.numeric(nl(x$tumor_location,
+   OL = c("posterior fossa, brain stem", "posterior fossa, cerebellum", "supratentorial, frontal lobe", "supratentorial, not otherwise specified", "supratentorial, occipital lobe", "supratentorial, parietal lobe", "supratentorial, temporal lobe"),
+   NL = c(0,0,0,0,0,0,1)))
+
+x$neoplasm_histologic_grade = as.numeric(nl(x$neoplasm_histologic_grade,
+   OL = c("g2", "g3", "g4"),
+   NL = c(2, 3, 4)))
+
+x$IDH.status = factor(as.numeric(nl(x$IDH.status,
+   OL = c("Mutant", "WT"),
+   NL = c(1, 0))),
+   labels = c("Mutant", "WT"))
+
+x$X1p.19q.codeletion = factor(as.numeric(nl(x$X1p.19q.codeletion,
+   OL = c("codel", "non-codel"),
+   NL = c(1, 0))),
+   labels = c("codel", "non-codel"))
+
+x$MGMT.promoter.status = factor(as.numeric(nl(x$MGMT.promoter.status,
+   OL = c("Methylated", "Unmethylated"),
+   NL = c(1, 0))),
+   labels = c("Methylated", "Unmethylated"))
+
+x$TERT.expression.status = factor(as.numeric(nl(x$TERT.expression.status,
+   OL = c("Expressed", "Not expressed"),
+   NL = c(1, 0))),
+   labels = c("Expressed", "Not expressed"))
+
+rownames(x)=colnames(Fhseq)
+
+colnames(x)=c("Age", "Karnofsky", "Seizure_history", "Temporal_location", "Astrocytic_histology", "Grade", "MutIDH", "Cod1p19q", "MetMGMT", "ExprTERT")
+```
+
+```{r}
+log2(1.05)
+```
+
+```{r}
+ds = function(M, x, t, n=F, b=T){
+  f = function(x){
+    x = as.numeric(x)
+    #x = 2^x
+    x[x==-Inf] = min(x[!x==-Inf])-1
+    x = x - median(x)
+    x = x / sd(x)
+    return(x)
+  }
+  dds <- DESeqDataSetFromMatrix(countData = M[,!is.na(x[,t])],
+                              colData = x[!is.na(x[,t]),],
+                              design= as.formula(paste("~", t, sep = "")))
+  dim(dds)
+  dds <- dds[rowMedians(counts(dds)) >= 5,]
+  dim(dds)
+  dds <- DESeq(dds)
+  dsr <- results(dds)
+  if(n){
+    nexp <- assay(vst(dds, blind=b))
+    an = flip(apply(nexp,1,f))
+    colnames(an) = rev(colnames(nexp))
+    y = list(dds,dsr,nexp,an)
+    names(y) = c("DDS", "DSR", "VST","nexp")
+    return(y)
+  } else {
+    y = list(dds,dsr)
+    names(y) = c("DDS", "DSR")
+    return(y)
+  }
+}
+```
+
+```{r}
+ds_epi = ds(M = Fhseq, x=x, t="Seizure_history", n=T, b=F)
+
+ds_Age = ds(M = Fhseq, x=x, t="Age", n=T, b=T)
+
+for(el in c("Karnofsky", "Temporal_location", "Astrocytic_histology", "Grade", "MutIDH", "Cod1p19q", "MetMGMT", "ExprTERT")){
+  print(el)
+  assign (paste("ds", el, sep = "_"), ds(M = Fhseq, x=x, t=el, n=F))
+}
+```
+
+
+
+
+```{r}
+res = as.data.frame(ds_epi$DSR)
+res = res[order(res$pvalue),]
+```
+
+
+
+
+```{r}
+res = cbind(res, trl[match(rownames(res), trl$hgnc_symbol),])
+
+res
+```
+
+
+```{r}
+colnames(res) = c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj", "ensembl", "hgnc", "entrez", "start", "end", "chr", "strand", "biotype")
+```
+
+
+```{r}
+res$gr="nc"
+res[(res$log2FoldChange<log2(1))&((res$padj<(0.1))&(!is.na(res$padj))),"gr"]="Downregulated"
+res[(res$log2FoldChange>log2(1))&((res$padj<(0.1))&(!is.na(res$padj))),"gr"]="Upregulated"
+
+dim(res[res$gr=="Upregulated",])
+dim(res[res$gr=="Downregulated",])
+```
+
+
+
+
+
+
+
+```{r}
+for(el in c("Age", "Karnofsky", "Temporal_location", "Astrocytic_histology", "Grade", "MutIDH", "Cod1p19q", "MetMGMT", "ExprTERT")){
+  res[,paste("pvalue", el, sep="_")] = as.data.frame(get(paste("ds", el, sep="_"))$DSR)[match(rownames(res), rownames(as.data.frame(get(paste("ds", el, sep="_"))$DSR))),]$pvalue
+  res[,paste("padj", el, sep="_")] = as.data.frame(get(paste("ds", el, sep="_"))$DSR)[match(rownames(res), rownames(as.data.frame(get(paste("ds", el, sep="_"))$DSR))),]$padj
+  res[,paste("log2FoldChange", el, sep="_")] = as.data.frame(get(paste("ds", el, sep="_"))$DSR)[match(rownames(res), rownames(as.data.frame(get(paste("ds", el, sep="_"))$DSR))),]$log2FoldChange
+  res[,paste("stat", el, sep="_")] = as.data.frame(get(paste("ds", el, sep="_"))$DSR)[match(rownames(res), rownames(as.data.frame(get(paste("ds", el, sep="_"))$DSR))),]$stat
+}
+```
+
+
+```{r}
+nexp = ds_epi$nexp
+Nexp = ds_Age$nexp
+```
+
+
+
+```{r}
+x = cli[tolower(substr(colnames(Nexp),1,12)),"surv"]
+ds_surv = as.data.frame(flip(apply(Nexp, 1, function(X){
+    summary(coxph(surv~gene, data = data.frame(surv = x, gene = X)))$coefficients[,4:5]
+})))
+```
+
+
+```{r}
+colnames(ds_surv) = c("p", "Z")
+ds_surv$g = ifelse(ds_surv$Z<0, "Positive", "Negative")
+ds_surv$padj = p.adjust(ds_surv$p, method = "BH")
+ds_surv$g[ds_surv$padj>0.05] = "NS"
+```
+
+
+```{r}
+res$pvalue_surv = ds_surv[match(rownames(res), rownames(ds_surv)),]$p
+res$padj_surv = ds_surv[match(rownames(res), rownames(ds_surv)),]$padj
+res$stat_surv = ds_surv[match(rownames(res), rownames(ds_surv)),]$Z
+res$Prognostic = ds_surv[match(rownames(res), rownames(ds_surv)),]$g
+```
+
+
+
+```{r}
+x = ifelse(res$log2FoldChange_MutIDH>0, "Mutant", "WT")
+x[res$padj_MutIDH>=0.1] = "NS"
+res$IDH = x
+
+x = ifelse(res$log2FoldChange_Karnofsky>0, "Higher", "Lower")
+x[res$padj_Karnofsky>=0.1] = "NS"
+res$Karnofsky = x
+
+x = ifelse(res$log2FoldChange_MetMGMT>0, "Methylated", "Unmethylated")
+x[res$padj_MetMGMT>=0.1] = "NS"
+res$MGMT = x
+
+x = ifelse(res$log2FoldChange_Age>0, "Higher", "Lower")
+x[res$padj_Age>=0.1] = "NS"
+res$Age = x
+
+x = ifelse(res$log2FoldChange_ExprTERT>0, "Expressed", "Not expressed")
+x[res$padj_ExprTERT>=0.1] = "NS"
+res$TERT = x
+
+x = ifelse(res$log2FoldChange_Cod1p19q>0, "Codel", "Non-codel")
+x[res$padj_Cod1p19q>=0.1] = "NS"
+res$Cod1p19q = x
+
+x = ifelse(res$log2FoldChange_Astrocytic_histology>0, "Astrocytic", "Oligodendroglial")
+x[res$padj_Astrocytic_histology>=0.1] = "NS"
+res$Histology = x
+
+x = ifelse(res$log2FoldChange_Grade>0, "Higher", "Lower")
+x[res$padj_Grade>=0.1] = "NS"
+res$Grade = x
+
+x = ifelse(res$log2FoldChange_Temporal_location>0, "Temporal", "Other")
+x[res$padj_Temporal_location>=0.1] = "NS"
+res$Location = x
+
+
+rownames(res) = res$hgnc
+```
+
+
+
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+write.csv(res[!res$gr=="nc",], file="DEG.csv")
+save(res, file = "res_epi.Rdata")
+save(nexp, file = "nexp_epi.Rdata")
+save(Nexp, file = "nexp_age.Rdata")
+```
+
+
+
+```{r}
+#Verhaak figures
+```
+
+
+```{r}
+c2 = msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CGP")
+c2 = c2 %>% split(x = .$gene_symbol, f = .$gs_name)
+```
+
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "res_epi.Rdata")
+
+res = res[,!colnames(res)=="Verhaak"]
+res$Verhaak = "none"
+
+for(el in intersect(c2$VERHAAK_GLIOBLASTOMA_CLASSICAL, as.character(res$hgnc))){
+  res[el, "Verhaak"] = "Classical"
+}
+
+for(el in intersect(c2$VERHAAK_GLIOBLASTOMA_PRONEURAL, as.character(res$hgnc))){
+  res[el, "Verhaak"] = "Proneural"
+}
+
+for(el in intersect(c2$VERHAAK_GLIOBLASTOMA_MESENCHYMAL, as.character(res$hgnc))){
+  res[el, "Verhaak"] = "Mesenchymal"
+}
+
+for(el in intersect(c2$VERHAAK_GLIOBLASTOMA_NEURAL, as.character(res$hgnc))){
+  res[el, "Verhaak"] = "Neural"
+}
+
+res$Verhaak = factor(res$Verhaak)
+
+for (el in rev(c("Neural", "Proneural", "Classical", "Mesenchymal", "none"))){
+  res$Verhaak = relevel(res$Verhaak, el)
+}
+res
+```
+```{r}
+res[!res$Verhaak == "none",]
+```
+
+
+
+
+```{r}
+fig1V = ggplot(data = res[!(is.na(res$stat)|is.na(res$stat_surv)),], aes(x = stat, y = stat_surv, color = Verhaak)) +
+  geom_point(alpha = 0) +
+  geom_point(alpha = 0.1, data = subset(res, Verhaak == 'none')) +
+  geom_point(alpha = 0.3, data = subset(res, !Verhaak == 'none')) +
+  xlab("DeSeq2 statistic for seizure history") +
+  ylab("Z-statistic in survival Cox model\n(DeSeq2 normalized data)") +
+  labs(title = "Differential expression of genes from TCGA dataset", subtitle = paste0("All genes: Spearman correlation: ρ = ", signif(cor.test(res$stat, res$stat_surv, method = "spearman")$estimate, 3), ", p = ", signif(cor.test(res$stat, res$stat_surv, method = "spearman")$p.value, 3), "\nDEGs: Exact Fisher test: log₂(OR) = ", signif(log2(fisher.test(xtabs(~gr+Prognostic, data = res)[c("Upregulated", "Downregulated"), c("Negative", "Positive")])$estimate), 3), ", p = ", signif(fisher.test(xtabs(~gr+Prognostic, data = res)[c("Upregulated", "Downregulated"), c("Negative", "Positive")])$p.value, 3)), color = "Gene in subtype signature\nby Verhaak et al.") +
+  #scale_color_discrete(name = "Gene in subtype signature\nby Verhaak et al.", labels = c("Neural", "Proneural", "Classical","Mesenchymal", "none")) +
+  geom_vline(linetype = "longdash", xintercept = mean(min(res[res$gr == "Upregulated",]$stat), max(res[!res$gr == "Upregulated",]$stat))) +
+  geom_vline(linetype = "longdash", xintercept = mean(max(res[res$gr == "Downregulated",]$stat), min(res[!res$gr == "Downregulated",]$stat))) +
+  geom_hline(linetype = "longdash", yintercept = mean(max(res[res$Prognostic == "Positive",]$stat, na.rm = T), min(res[!res$Prognostic == "Positive",]$stat, na.rm = T))) +
+  geom_hline(linetype = "longdash", yintercept = mean(min(res[res$Prognostic == "Positive",]$stat, na.rm = T), max(res[!res$Prognostic == "Positive",]$stat, na.rm = T))) +
+  scale_color_manual(values = c("green","orange", "blue", "purple", "gray"))+
+  theme_classic()
+fig1V
+```
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(fig1V, file = "fig1V.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig1V, filename = "fig1V.png", width = 8, height = 6, dpi = 400)
+```
+
+
+
+```{r}
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$log2FoldChange)]
+Q = Q[!is.na(res$hgnc)]
+Q = Q[order(Q, decreasing = T)]
+
+fgseaRes <- fgseaMultilevel(pathways = c2, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000)
+#
+```
+
+```{r}
+f = function(el){
+    pathway = c2[[el]]
+    stats = Q
+    gseaParam = 1
+    rnk <- rank(-stats)
+    ord <- order(rnk)
+    statsAdj <- stats[ord]
+    statsAdj <- sign(statsAdj) * (abs(statsAdj)^gseaParam)
+    statsAdj <- statsAdj/max(abs(statsAdj))
+    pathway <- unname(as.vector(na.omit(match(pathway, names(statsAdj)))))
+    pathway <- sort(pathway)
+    gseaRes <- calcGseaStat(statsAdj, selectedStats = pathway, 
+        returnAllExtremes = TRUE)
+    bottoms <- gseaRes$bottoms
+    tops <- gseaRes$tops
+    n <- length(statsAdj)
+    xs <- as.vector(rbind(pathway - 1, pathway))
+    ys <- as.vector(rbind(bottoms, tops))
+    toPlot <- data.frame(x = c(0, xs, n + 1), y = c(0, ys, 0))
+    diff <- (max(tops) - min(bottoms))/8
+    return(toPlot)
+}
+
+df = data.frame(gene = c("", names(Q), ""))
+df$x = (1:length(df$gene)) -1
+for(EL in c("VERHAAK_GLIOBLASTOMA_NEURAL", "VERHAAK_GLIOBLASTOMA_MESENCHYMAL")){
+  df[,EL] = ifelse(df$gene %in% c2[[EL]], 1, 0)
+  df[,paste0(EL, "_ES")] = NA
+  x = f(EL)
+  df[match(x$x, df$x), paste0(EL, "_ES")] = x$y
+}
+
+df
+```
+
+```{r}
+Fig1GSEA_Verhaak_Epi = ggplot() +
+  geom_hline(yintercept = 0) +
+  geom_line(data = df[!is.na(df$VERHAAK_GLIOBLASTOMA_NEURAL_ES),], aes(x = x, y = VERHAAK_GLIOBLASTOMA_NEURAL_ES, color = "neural"), size = 1.5) +
+  geom_line(data = df[!is.na(df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL_ES),], aes(x = x, y = VERHAAK_GLIOBLASTOMA_MESENCHYMAL_ES, color = "mesenchymal"), size = 1.5) +
+  geom_segment(aes(x=df[df$VERHAAK_GLIOBLASTOMA_NEURAL == 1,"x"],xend=df[df$VERHAAK_GLIOBLASTOMA_NEURAL == 1,"x"],y=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.05 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))) ,yend=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.15 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))), color = "neural"), alpha = 0.3) +
+  geom_segment(aes(x=df[df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL == 1,"x"],xend=df[df$VERHAAK_GLIOBLASTOMA_MESENCHYMAL == 1,"x"],y=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.05 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))) ,yend=min(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - 0.15 * (max(dropNA(unlist(df[,grepl("_ES", colnames(df))]))) - min(dropNA(unlist(df[,grepl("_ES", colnames(df))])))), color = "mesenchymal"), alpha = 0.3) +
+  scale_x_continuous(expand = c(0, 150)) + scale_y_continuous(expand = c(0, 0.02)) +
+  scale_color_manual(breaks = c("neural", "mesenchymal"), values = c("green", "purple"), name = "Verhaak et al. glioblastoma subtype signatures in Hs.c2:", labels = c(paste0("Neural: padj = ",signif(as.numeric(fgseaRes[fgseaRes$pathway == "VERHAAK_GLIOBLASTOMA_NEURAL","padj"]),digits = 3), ", NES = ",signif(as.numeric(fgseaRes[fgseaRes$pathway == "VERHAAK_GLIOBLASTOMA_NEURAL","NES"]),digits = 3)), paste0("Mesenchymal: padj = ",signif(as.numeric(fgseaRes[fgseaRes$pathway == "VERHAAK_GLIOBLASTOMA_MESENCHYMAL","padj"]),digits = 3), ", NES = ",signif(as.numeric(fgseaRes[fgseaRes$pathway == "VERHAAK_GLIOBLASTOMA_MESENCHYMAL","NES"]),digits = 3))), guide = guide_legend(direction = "vertical", title.hjust = 0)) +
+  labs(title = "Gene Set Enrichment Analysis", x = "Genes ranked by seizure history logFC", y = "Enrichment Score") +
+  theme_classic() + theme(legend.position = "top", legend.justification='left')
+```
+
+```{r}
+Fig1GSEA_Verhaak_Epi
+```
+
+
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig1GSEA_Verhaak_Epi, df, file = "Fig1GSEA_Verhaak_Epi.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig1GSEA_Verhaak_Epi, filename = "Fig1GSEA_Verhaak_Epi.png", width = 8, height = 6, dpi = 400)
+```
+
+
+
+
+
+
+```{r}
+#Heatmap
+```
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "nexp_epi.Rdata")
+```
+
+
+
+
+```{r}
+library(GSEAlm)
+a = matrix(0, nrow = 2, ncol = length(rownames(res[!res$gr=="nc",])), dimnames = list(r = c("Upregulated", "Downregulated"), c = rownames(res[!res$gr=="nc",])))
+a["Upregulated",res$hgnc[res$gr=="Upregulated"]] = 1
+a["Downregulated",res$hgnc[res$gr=="Downregulated"]] = 1
+A = GSNormalize(dataset = nexp[colnames(a),], incidence = a)
+```
+
+```{r}
+x = A["Upregulated",]-A["Downregulated",]
+cli$Epi_score = NA
+cli[tolower(substr(names(x),1,12)),"Epi_score"] = x
+```
+
+
+
+```{r}
+
+X = nexp[rownames(res[!res$gr=="nc",][order(res[!res$gr=="nc",]$stat, decreasing = T),]),order(cli[tolower(substr(colnames(nexp), 1,12)), "Epi_score"], decreasing = T)]
+
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "Cod1p19q", "Location", "Grade", "Histology")
+
+col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+           `Seizures` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"))
+
+ha <- HeatmapAnnotation(df=x,name = colnames(x),col=col, annotation_name_gp = gpar(fontsize = 9))
+
+ha = Heatmap(matrix = X,
+             right_annotation = rowAnnotation(foo = anno_mark(at = (1:length(rownames(X)))[rownames(X) %in% c("PCDHGA3", "POSTN")], labels = c("PCDHGA3", "POSTN")), annotation_name_gp = gpar(fontsize = 9)),
+        top_annotation = ha,
+        #right_annotation_param = list(labels_gp = gpar(fontsize = 20)),
+        cluster_columns = F,
+        cluster_rows = F,
+        show_row_names = F,
+        show_column_names = F,
+        column_title = "Heatmap of differently expressed genes",
+        name = "Normalized gene expression level",
+        heatmap_legend_param = list(legend_direction = "horizontal"),
+        col = colorRamp2(c(min(X), median(X) - 2*sd(X),median(X) - 1*sd(X), median(X), median(X) + 1*sd(X),  median(X) + 2*sd(X), max(X)),
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+
+
+
+Fig1Heatmap <-  grid.grabExpr(draw(ha, heatmap_legend_side = "bottom"))
+```
+
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig1Heatmap, file = "Fig1Heatmap.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig1Heatmap, filename = "Fig1Heatmap.png", width = 8, height = 6, dpi = 400)
+```
+
+```{r}
+#overlap
+```
+
+
+```{r}
+#Y to macierza z ekspresja
+#ENS to macierz z nazwami genow (kolumna 1) i nazwami sond (kolumna 2)
+#gr1 i gr2 to kolumny zawierajace probki z porownywanych grup
+map=function(Y,ENS,gr1,gr2){
+    Y=Y[apply(Y,1,function(y)   (length(gr1)-sum(is.na(y[gr1]))>1) & (length(gr2)-sum(is.na(y[gr2]))>1)    ),]
+    Y=Y[apply(Y,1, function(y)  ((sd(y[gr1],na.rm=T)>0) & (sd(y[gr2],na.rm=T)>0)) ),]
+    ENS=ENS[ENS[,2]!="",]
+    ENS=ENS[ENS[,2]%in%rownames(Y),]
+    id_l=tapply(as.character(ENS[,1]),as.character(ENS[,2]),function(z) length(unique(z)))
+    ENS=ENS[ENS[,2]%in%names(id_l[id_l==1]),]
+    ens_list=tapply(as.character(ENS[,2]),as.character(ENS[,1]),function(x) list(unique(x)))
+    ens_list1=unlist(ens_list[sapply(ens_list,length)==1])
+    V1=Y[ens_list1,]
+    rownames(V1)=names(ens_list1)
+    ens_list2=ens_list[!names(ens_list)%in%names(ens_list1)]
+    {
+        if (length(ens_list2)>0){
+            V2=t(sapply(ens_list2,function(x){
+                AA=Y[x,]
+                aa=apply(AA,1,function(y) t.test(y[gr1],y[gr2])$p.val)
+                as.numeric(AA[names(which(aa==min(aa)))[1],])
+            }))
+            rownames(V2)=names(ens_list2)
+            colnames(V2)=colnames(V1)
+            V=rbind(V1,V2)
+        }
+        else
+            V=V1
+    }
+    V=V[sort(rownames(V)),]
+    V
+}
+```
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+e=read.table("GSE55918_Matrix_GliomaClusteringAnalysis.txt", sep="\t", header = T)
+rownames(e)=as.character(e$Probe.set.ID)
+e=e[,!(colnames(e)=="Probe.set.ID")]
+
+es = read.csv("GSE55918.csv")
+es=as.data.frame(es)
+
+colnames(es)=c("sample", "file", "source", "organism", "data_set", "array", "download", "study_design", "clustering", "grade", "histology", "age", "surv_month", "censor", "treatment_type", "chemotherapy")
+es$nn = paste("sample_", 1:length(es$sample), sep = "")
+
+x = as.character(es$sample)
+x[es$data_set=="E-MEXP-567"] = gsub("-", ".", x[es$data_set=="E-MEXP-567"])
+x[!is.na(as.numeric(substr(es$sample, 1, 1)))] = paste("X", x[!is.na(as.numeric(substr(es$sample, 1, 1)))], sep = "")
+x[es$data_set=="Rich et al."] = gsub("-", ".", x[es$data_set=="Rich et al."])
+x[es$data_set=="REMBRANDT"] = gsub("-", ".", x[es$data_set=="REMBRANDT"])
+x = gsub("APEEK_p_TCGA_GBM16-Ov15_Expr_HT_HG-U133A_96-HTA_", "APEEK_p_TCGA_GBM16.Ov15_Expr_HT_HG.U133A_96.HTA_", x)
+x = gsub("BONES_p_TCGA_Batch8_9_RNA_HT_HG-U133A_96-HTA_", "BONES_p_TCGA_Batch8_9_RNA_HT_HG.U133A_96.HTA_", x)
+x = gsub("FEAST_p_TCGA_B20_21_Expression_HT_HG-U133A_96-HTA_", "FEAST_p_TCGA_B20_21_Expression_HT_HG.U133A_96.HTA_", x)
+x = gsub("MULEY_p_TCGA_b53and79_Expr_HT_HG-U133A_24-HTA_", "MULEY_p_TCGA_b53and79_Expr_HT_HG.U133A_24.HTA_", x)
+x = gsub("NIDUS_p_TCGA_Batch10_RNA_HT_HG-U133A_96-HTA_", "NIDUS_p_TCGA_Batch10_RNA_HT_HG.U133A_96.HTA_", x)
+x = gsub("SOCKS_p_TCGA_31_38_RX14_HT_HG-U133A_96-HTA_", "SOCKS_p_TCGA_31_38_RX14_HT_HG.U133A_96.HTA_", x)
+x = gsub("SPANS_p_TCGA_Batch60_62_Expr_HT_HG-U133A_24-HTA_", "SPANS_p_TCGA_Batch60_62_Expr_HT_HG.U133A_24.HTA_", x)
+x = gsub("TALAR_p_TCGA_Batch62_Expr_HT_HG-U133A_24-HTA_", "TALAR_p_TCGA_Batch62_Expr_HT_HG.U133A_24.HTA_", x)
+x = gsub("TARRE_p_MultiPlate_TCGA_SS_MA_Ref_HT_HG-U133A_96-HTA_", "TARRE_p_MultiPlate_TCGA_SS_MA_Ref_HT_HG.U133A_96.HTA_", x)
+x = gsub("URGED_p_TCGA_Pop_May2011_HT_HG-U133A_96-HTA_", "URGED_p_TCGA_Pop_May2011_HT_HG.U133A_96.HTA_", x)
+x = gsub("WARNS_p_TCGA_b79_Expr_HT_HG-U133A_24-HTA_", "WARNS_p_TCGA_b79_Expr_HT_HG.U133A_24.HTA_", x)
+
+es$on = x
+
+colnames(e) = es$nn[match(colnames(e), es$on)]
+
+
+es$surv_month[es$surv_month=="Null"]=NA
+es$surv_month=as.numeric(as.character(es$surv_month))
+es$surv =  with(es, Surv(surv_month/12, censor == 1))
+
+es$grade[es$grade=="null"]=NA
+es$grade=gsub(" ", "", as.character(es$grade))
+
+annot = data.frame(ID = rownames(e), entrez = gsub("_at", "", rownames(e)))
+x = as.character(trl[match(annot$entrez, trl$entrezgene),"hgnc_symbol"])
+x[x=="GABRB2"]="GABBR2"
+x[x=="GPR98"]="ADGRV1"
+annot$hgnc = x
+
+E=map(Y=e, ENS = as.matrix(annot[,c("hgnc", "ID")]), gr1=as.character(es[(es$grade=="G4")&(!is.na(es$grade)),]$nn), gr2=as.character(es[(!es$grade=="G4")&(!is.na(es$grade)),]$nn))
+
+```
+
+```{r}
+x = es$surv
+E = as.matrix(E[,!is.na(x)])
+E = E[rowSums(is.na(E))<500,]
+x = x[!is.na(x)]
+```
+
+
+
+```{r}
+ds_verset = as.data.frame(flip(apply(E, 1, function(X){
+    summary(coxph(surv~gene, data = data.frame(surv = x, gene = X)))$coefficients[,4:5]
+})))
+```
+
+
+```{r}
+colnames(ds_verset) = c("p", "Z")
+ds_verset$g = ifelse(ds_verset$Z<0, "Positive", "Negative")
+ds_verset$padj = p.adjust(ds_verset$p, method = "BH")
+ds_verset$g[ds_verset$padj>0.05] = "NS"
+```
+
+
+
+
+
+
+```{r}
+res$pvalue_verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$p
+res$padj_verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$padj
+res$stat_verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$Z
+res$verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$g
+```
+
+```{r}
+sigg = res[!res$gr=="nc",]
+```
+
+
+
+
+
+
+
+```{r}
+overlap = data.frame(feat = c("Age", "Grade", "Histology", "Prognostic", "TERT", "Cod1p19q", "verset", "IDH",  "Location", "Karnofsky", "MGMT"),
+                     name = c("age", "grade", "histology", "prognostic in TCGA", "TERT", "1p19q", "prognostic in GSE", "IDH", "Location", "Karnofsky", "MGMT"))
+rownames(overlap)=overlap$feat
+
+nn=NULL
+u=NULL
+d=NULL
+x=NULL
+for(el in overlap$feat){
+  counts=as.data.frame(xtabs(as.formula(paste("~ gr + `", el, "`", sep="")), data = sigg))
+  table = xtabs(as.formula(paste("Freq ~ gr + `", el, "`", sep="")), data=counts)
+  table = table[c("Upregulated", "Downregulated"),!colnames(table)=="NS"]
+  table = table[,order(table[2,],decreasing = F)]
+  nn = c(nn, paste(colnames(table)[1],overlap[el,"name"]))
+  FT=fisher.test(table)
+  u = c(u, table["Upregulated",])
+  d = c(d, table["Downregulated",])
+  x = c(x, paste(el, colnames(table), sep = "_"))
+  overlap[el,"p.epi"]=FT$p.value
+  overlap[el,"OR.epi"]=FT$estimate
+  overlap[el,"lCI.epi"]=FT$conf.int[1]
+  overlap[el,"uCI.epi"]=FT$conf.int[2]
+}
+overlap$nn= gsub("codel", "Codeleted", nn)
+overlap$OR.epi = log2(overlap$OR.epi)
+overlap$lCI.epi = log2(overlap$lCI.epi)
+overlap$uCI.epi = log2(overlap$uCI.epi)
+overlap$padj.epi = p.adjust(overlap$p.epi, method = "BH")
+
+overlap$lab = paste("adj. p = ", signif(overlap$padj.epi, 3), sep = "")
+overlap$labpos=-2
+overlap$nn = with(overlap, reorder(nn, OR.epi))
+
+fp <- ggplot(data=overlap, aes(x=nn, y=OR.epi, ymin=lCI.epi, ymax=uCI.epi)) +
+        geom_pointrange() +
+        geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+        geom_text(data=overlap, aes(x = nn, y = labpos, label = lab, hjust=0, colour = "blue")) + 
+        scale_color_manual(values=c("blue")) +
+        coord_flip() +  # flip coordinates (puts labels on y axis)
+        labs(title="Overlap of associated genes", x=NULL, y = "Upregulated with seizures log2 OR (95% CI)\n") +
+        theme_classic() +  # use a white background
+        theme(legend.position="none")
+
+Fig1overfp = fp
+
+Fig1overfp
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig1overfp, file = "Fig1overfp.Rdata")
+
+ggsave(Fig1overfp, filename = "Fig1overfp.png", width = 8, height = 6, dpi = 400)
+```
+
+
+
+
+```{r}
+overlap
+```
+
+
+
+
+
+
+
+```{r}
+
+X = rep("gray", times = length(x))
+names(X)=x
+y = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             Age = c("NS" = "gray", "Lower" = "white", "Higher" = "black"),
+             TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "Codel" = "brown", "Non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "Astrocytic" = "blue", "Oligodendroglial"  = "yellow"),
+             Grade = c("NS" = "gray", "Lower" = "forestgreen", "Higher" = "pink"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             Karnofsky = c("NS" = "gray", "Higher" = "darkslateblue", "Lower"="lawngreen"),
+             MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"))
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"))
+
+for(el in x){
+  Y = unlist(strsplit(el, "_"))
+  X[el] = y[[Y[1]]][Y[2]]
+}
+
+f = function(x){
+  return(x[1])
+}
+
+
+df <- data.frame(group = gsub("_", " ", gsub("multiv", "Multivariate prog. in TCGA", gsub("Prognostic", "Prog. in TCGA", gsub("verset", "Prog. in GSE", x)))),
+                 x = rep(1:length(x), 2),
+                 y = c(u, -d),
+                 gr = rep(c("u","d"), each=length(x)),
+                 col = X,
+                 or = overlap[sapply(strsplit(x, "_"),f),"OR.epi"])
+
+df = df[order(df$or, decreasing = T),]
+df$X = 2*(rep(1:(length(x)/2), each = 4))+mod(df$x+1,2)
+
+df$group = with(df, reorder(group, X))
+df$X = -df$X
+
+df$p = paste(signif(100*(abs(df$y)/(ifelse(df$gr=="u", sum(sigg$gr=="Upregulated"), sum(sigg$gr=="Downregulated")))), 3), "%")
+
+df$labpos = ifelse(df$gr=="u", 180, -340)
+
+
+p <- ggplot(df, aes(x=X, y=y, fill=group)) + 
+	    geom_bar(stat="identity", position="identity", colour = "gray") +
+      geom_hline(yintercept=c(-sum(sigg$gr=="Downregulated"), 0, sum(sigg$gr=="Upregulated")), lty=c(2,1,2)) +
+      scale_fill_manual(values=as.character(unique(df$col)))+
+      geom_text(data=df, aes(x = X, y = labpos, label = p, hjust=0)) +
+      coord_flip() +
+      labs(title="Number of overlaping genes", x="Feature", y = "Downregulated            Upregulated \n with seizures") +
+      expand_limits(y = c(-sum(sigg$gr=="Downregulated"), sum(sigg$gr=="Upregulated"))) +
+      theme_classic() +  # use a white background
+  scale_y_continuous(expand = c(0, 100)) +
+      theme(legend.position="right", axis.title.y=element_blank(), legend.title=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), axis.line.y = element_blank(), plot.title = element_text(hjust = 0.5))
+
+Fig1overbar = p
+
+Fig1overbar
+```
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig1overbar, file = "Fig1overbar.Rdata")
+
+ggsave(Fig1overbar, filename = "Fig1overbar.png", width = 8, height = 6, dpi = 400)
+```
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load(file = "nexp_age.Rdata")
+load(file = "res_epi.Rdata")
+```
+
+```{r}
+x = c2[(names(c2) %in% c("MUELLER_METHYLATED_IN_GLIOBLASTOMA", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP", "VERHAAK_GLIOBLASTOMA_CLASSICAL", "VERHAAK_GLIOBLASTOMA_MESENCHYMAL", "VERHAAK_GLIOBLASTOMA_NEURAL", "VERHAAK_GLIOBLASTOMA_PRONEURAL", "ZHENG_GLIOBLASTOMA_PLASTICITY_DN", "ZHENG_GLIOBLASTOMA_PLASTICITY_UP", "BEIER_GLIOMA_STEM_CELL_DN", "BEIER_GLIOMA_STEM_CELL_UP", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP"))|(grepl("glio", tolower(names(c2))))]
+
+
+x[["Upregulated"]] = rownames(res[res$gr == "Upregulated",])
+x[["Downregulated"]] = rownames(res[res$gr == "Downregulated",])
+
+a = matrix(0, nrow = length(names(x)), ncol = length(intersect(unique(unlist(x)), rownames(Nexp))), dimnames = list(c = names(x), r = intersect(unique(unlist(x)), rownames(Nexp))))
+x = lapply(x, intersect, y = colnames(a))
+
+for(el in 1:length(x)){
+  a[el, x[[el]]] = 1
+}
+
+a = a[rowSums(a)>0, colSums(a)>0]
+
+
+A = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+```
+
+```{r}
+x = as.data.frame(flip(A))
+for(el in colnames(x)[grepl("_UP", colnames(x))]){
+  el = gsub("_UP", "", el)
+  x[,el] = x[,paste0(el, "_UP")] - mean(x[,paste0(el, "_UP")]) - x[,paste0(el, "_DN")] + mean(x[,paste0(el, "_DN")])
+  x = x[,!colnames(x)==paste0(el, "_UP")]
+  x = x[,!colnames(x)==paste0(el, "_DN")]
+}
+
+x$Epilepsy = x$Upregulated - x$Downregulated - mean(x$Upregulated) + mean(x$Downregulated)
+x = x[,!(colnames(x) %in% c("Upregulated", "Downregulated"))]
+
+colnames(x) = tolower(colnames(x))
+colnames(x) = gsub("glioblastoma", "GBM", colnames(x))
+colnames(x) = gsub("pdgfb", "PDGFB", colnames(x))
+colnames(x) = gsub("gbm", "GBM", colnames(x))
+colnames(x) = gsub("ao", "AO", colnames(x))
+colnames(x) = gsub("pilocytic_astrocytoma", "PA", colnames(x))
+
+colnames(x) = gsub("_", " ", colnames(x))
+'colnames(x) = sapply(colnames(x), function(el){
+  el = unlist(strsplit(el, " "))
+  if(length(el)>1){
+    el = el[2:length(el)]
+  }
+  el = paste(el, collapse = " ")
+})'
+
+colnames(x) = sapply(colnames(x), function(el){
+  el = paste0(toupper(substr(el, 1, 1)), substr(el, 2, nchar(el)))
+})
+
+signatures = flip(x)
+
+sign_surv = as.data.frame(flip(apply(signatures, 1, function(X){
+    summary(coxph(surv~gene, data = data.frame(surv = cli[tolower(substr(colnames(signatures),1,12)),"surv"], gene = X)))$coefficients[,4:5]
+})))
+sign_surv
+
+x = prcomp(x)
+
+
+X = as.data.frame(x$rotation)
+X$name = factor(rownames(X))
+X$start = 0
+X$surv = sign_surv[rownames(X),]$z
+p = ggplot(data = X, aes(x = PC1, y = PC2, label = name)) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  labs(title = "Signatures in glioma biology", subtitle = "Principal Component Analysis", x = paste0("PC1, explains ", signif(100*apply(x$x, 2, var)["PC1"] / sum(apply(x$x, 2, var)),3), "% of variability"), y = paste0("PC2, explains ", signif(100*apply(x$x, 2, var)["PC2"] / sum(apply(x$x, 2, var)),3), "% of variability")) +
+  geom_segment(aes(x = start, y = start, xend = PC1, yend = PC2, color = -surv), size = 1, arrow = arrow(length = unit(0.02, "npc"), type="closed")) +
+  scale_color_gradient2(name = "Survival\ninfluence", mid = "gray", high  = "dodgerblue", low = "deeppink") +
+  geom_text_repel(data = X[((X$PC1^2 + X$PC2^2)^0.5 > 0.2),], aes(x = PC1, y = PC2, label = name), force = 1, angle = 0, xlim = c(max(X$PC1), NA), hjust = 0, segment.size = 0.5, segment.alpha = 0.5) + #
+  #geom_text_repel(data = X[((X$PC1^2 + X$PC2^2)^0.5 > 0.2)&X$PC1<0,], fill = "white",  min.segment.length = 0.1) + #xlim = c(NA, -0.4),
+  scale_x_continuous(breaks = 0, limits = c(min(X$PC1), max(X$PC1) + 0.7)) +
+  scale_y_continuous(breaks = 0) +
+  coord_fixed() +
+  theme_classic() +
+  theme(axis.line.x = element_blank(), axis.line.y = element_blank(), legend.position = "bottom")
+
+ggsave(p, filename = "t1.png", width = 8, height = 6)
+Fig1radial = p
+```
+
+
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(Fig1radial, file = "Fig1radial.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(Fig1radial, filename = "Fig1radial.png", width = 8, height = 6, dpi = 400)
+```
+
+```{r}
+x = c2[(names(c2) %in% c("MUELLER_METHYLATED_IN_GLIOBLASTOMA", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP", "VERHAAK_GLIOBLASTOMA_CLASSICAL", "VERHAAK_GLIOBLASTOMA_MESENCHYMAL", "VERHAAK_GLIOBLASTOMA_NEURAL", "VERHAAK_GLIOBLASTOMA_PRONEURAL", "ZHENG_GLIOBLASTOMA_PLASTICITY_DN", "ZHENG_GLIOBLASTOMA_PLASTICITY_UP", "BEIER_GLIOMA_STEM_CELL_DN", "BEIER_GLIOMA_STEM_CELL_UP", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP"))|(grepl("glio", tolower(names(c2))))]
+
+
+x[["Upregulated"]] = rownames(res[res$gr == "Upregulated",])
+x[["Downregulated"]] = rownames(res[res$gr == "Downregulated",])
+
+a = matrix(0, nrow = length(names(x)), ncol = length(intersect(unique(unlist(x)), rownames(E))), dimnames = list(c = names(x), r = intersect(unique(unlist(x)), rownames(E))))
+x = lapply(x, intersect, y = colnames(a))
+
+for(el in 1:length(x)){
+  a[el, x[[el]]] = 1
+}
+
+a = a[rowSums(a)>0, colSums(a)>0]
+
+
+A = GSNormalize(dataset = E[colnames(a),], incidence = a)
+```
+
+```{r}
+x = as.data.frame(flip(A))
+for(el in colnames(x)[grepl("_UP", colnames(x))]){
+  el = gsub("_UP", "", el)
+  x[,el] = x[,paste0(el, "_UP")] - mean(x[,paste0(el, "_UP")]) - x[,paste0(el, "_DN")] + mean(x[,paste0(el, "_DN")])
+  x = x[,!colnames(x)==paste0(el, "_UP")]
+  x = x[,!colnames(x)==paste0(el, "_DN")]
+}
+
+x$Epilepsy = x$Upregulated - x$Downregulated - mean(x$Upregulated) + mean(x$Downregulated)
+x = x[,!(colnames(x) %in% c("Upregulated", "Downregulated"))]
+
+colnames(x) = tolower(colnames(x))
+colnames(x) = gsub("glioblastoma", "GBM", colnames(x))
+colnames(x) = gsub("pdgfb", "PDGFB", colnames(x))
+colnames(x) = gsub("gbm", "GBM", colnames(x))
+colnames(x) = gsub("ao", "AO", colnames(x))
+colnames(x) = gsub("pilocytic_astrocytoma", "PA", colnames(x))
+
+colnames(x) = gsub("_", " ", colnames(x))
+'colnames(x) = sapply(colnames(x), function(el){
+  el = unlist(strsplit(el, " "))
+  if(length(el)>1){
+    el = el[2:length(el)]
+  }
+  el = paste(el, collapse = " ")
+})'
+
+colnames(x) = sapply(colnames(x), function(el){
+  el = paste0(toupper(substr(el, 1, 1)), substr(el, 2, nchar(el)))
+})
+
+signatures = flip(x)
+
+sign_surv = as.data.frame(flip(apply(signatures, 1, function(X){
+    summary(coxph(surv~gene, data = data.frame(surv = es[match(colnames(signatures),es$nn),"surv"], gene = X)))$coefficients[,4:5]
+})))
+sign_surv
+
+x = prcomp(x)
+
+
+X = as.data.frame(x$rotation)
+X$name = factor(rownames(X))
+X$start = 0
+X$surv = sign_surv[rownames(X),]$z
+p = ggplot(data = X, aes(x = PC1, y = PC2, label = name)) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  labs(title = "Signatures in glioma biology", subtitle = "Principal Component Analysis", x = paste0("PC1, explains ", signif(100*apply(x$x, 2, var)["PC1"] / sum(apply(x$x, 2, var)),3), "% of variability"), y = paste0("PC2, explains ", signif(100*apply(x$x, 2, var)["PC2"] / sum(apply(x$x, 2, var)),3), "% of variability")) +
+  geom_segment(aes(x = start, y = start, xend = PC1, yend = PC2, color = -surv), size = 1, arrow = arrow(length = unit(0.02, "npc"), type="closed")) +
+  scale_color_gradient2(name = "Survival\ninfluence", mid = "gray", high  = "dodgerblue", low = "deeppink") +
+  geom_text_repel(data = X[((X$PC1^2 + X$PC2^2)^0.5 > 0.2),], aes(x = PC1, y = PC2, label = name), force = 1, angle = 0, xlim = c(max(X$PC1), NA), hjust = 0, segment.size = 0.5, segment.alpha = 0.5) + #
+  #geom_text_repel(data = X[((X$PC1^2 + X$PC2^2)^0.5 > 0.2)&X$PC1<0,], fill = "white",  min.segment.length = 0.1) + #xlim = c(NA, -0.4),
+  scale_x_continuous(breaks = 0, limits = c(min(X$PC1), max(X$PC1) + 0.7)) +
+  scale_y_continuous(breaks = 0) +
+  coord_fixed() +
+  theme_classic() +
+  theme(axis.line.x = element_blank(), axis.line.y = element_blank(), legend.position = "bottom")
+
+ggsave(p, filename = "t1.png", width = 8, height = 6)
+Fig1sradial = p
+```
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(Fig1sradial, file = "Fig1sradial.rdata")
+ggsave(Fig1sradial, width = 12, height = 9, filename = "Fig1sradial.png", dpi = 400)
+```
+
+
+
+
+```{r}
+library(pec)
+x = c2[(names(c2) %in% c("MUELLER_METHYLATED_IN_GLIOBLASTOMA", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP", "VERHAAK_GLIOBLASTOMA_CLASSICAL", "VERHAAK_GLIOBLASTOMA_MESENCHYMAL", "VERHAAK_GLIOBLASTOMA_NEURAL", "VERHAAK_GLIOBLASTOMA_PRONEURAL", "ZHENG_GLIOBLASTOMA_PLASTICITY_DN", "ZHENG_GLIOBLASTOMA_PLASTICITY_UP", "BEIER_GLIOMA_STEM_CELL_DN", "BEIER_GLIOMA_STEM_CELL_UP", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP"))|(grepl("glio", tolower(names(c2))))]
+X = list()
+for(el in unique(sapply(strsplit(names(x), "_"), function(X){X[1]}))){
+  X[[el]] = unique(unlist(x[grepl(el, names(x))]))
+}
+
+X = X[!names(X)=="VERHAAK"]
+X = c(X, x[grepl("VERHAAK", names(x))])
+names(X) = gsub("VERHAAK_GLIOBLASTOMA_", "GBM: ", names(X))
+
+#X$EPILEPSY = intersect(res[!res$gr=="nc", "hgnc"], unique(unlist(c2)))
+X$EPILEPSY = res[!res$gr=="nc", "hgnc"]
+
+x = as.data.frame(flip(E))
+
+x$surv = (es[match(rownames(x), es$nn),"surv"])
+x$time = (es[match(rownames(x), es$nn),"surv_month"]/12)
+x$status = (es[match(rownames(x), es$nn),"censor"])
+x = x[!is.na(x$time),]
+x = x[!is.na(x$status),]
+x$time = sapply(x$time, max, 0)
+models = lapply(X, function(X){
+  coxph(as.formula(paste0("Surv(time,status)~ `", paste0(intersect(X, rownames(E)), collapse = "` + `"), "`")), data = x, x = T, y = T)
+})
+
+X = pec(models, data = x, formula =Surv(time,status)~1)
+
+df = data.frame(row.names = names(models),
+                concordance = sapply(models, function(el){concordance(el)$concordance}),
+                AIC = sapply(models, AIC),
+                logrank = sapply(models, function(el){summary(el)$logtest["pvalue"]}),
+                wald = sapply(models, function(el){summary(el)$waldtest["pvalue"]}))
+df$brier = crps(X, times = rev(c(1,2,5,10, max(x$time))))[rownames(df),1]
+df$R2 = as.matrix(R2(X, times = rev(c(1,2,5,10, max(x$time))))$AppErr)[4,paste0("RR.", rownames(df))]
+df$color = c(hcl.colors(length(df$concordance)-1, palette = "fall"), "#008FFF")
+df$name = rownames(df)
+
+fig1smodelstats = list()
+
+
+df = df[order(df$concordance),]
+df$name = reorder(df$name, df$concordance)
+df$color = reorder(df$color, df$concordance)
+
+fig1smodelstats[["concordance"]] = ggplot(data = df, aes(x = name, y = concordance, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "Concordance", x = "Gene set")
+
+df = df[order(-df$AIC),]
+df$name = reorder(df$name, -df$AIC)
+df$color = reorder(df$color, -df$AIC)
+
+fig1smodelstats[["AIC"]] = ggplot(data = df, aes(x = name, y = AIC, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "Akaike information criterion", x = "Gene set")
+
+df = df[order(-df$logrank),]
+df$name = reorder(df$name, -df$logrank)
+df$color = reorder(df$color, -df$logrank)
+
+fig1smodelstats[["logrankp"]] = ggplot(data = df, aes(x = name, y = -log10(logrank), fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "-log(logrank test p-value)", x = "Gene set")
+
+df = df[order(-df$wald),]
+df$name = reorder(df$name, -df$wald)
+df$color = reorder(df$color, -df$wald)
+
+fig1smodelstats[["wald"]] = ggplot(data = df, aes(x = name, y = -log10(wald), fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "-log(Wald test p-value)", x = "Gene set")
+
+df = df[order(-df$brier),]
+df$name = reorder(df$name, -df$brier)
+df$color = reorder(df$color, -df$brier)
+
+fig1smodelstats[["brier"]] = ggplot(data = df, aes(x = name, y = brier, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "Integrated Brier score", x = "Gene set")
+
+df = df[order(df$R2),]
+df$name = reorder(df$name, df$R2)
+df$color = reorder(df$color, df$R2)
+
+fig1smodelstats[["R2"]] = ggplot(data = df, aes(x = name, y = R2, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "R² for 2 years survival", x = "Gene set")
+```
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(fig1smodelstats, file = "fig1smodelstats.rdata")
+ggsave(ggarrange(plotlist = fig1smodelstats), width = 12, height = 6, filename = "fig1smodelstats.png", dpi = 400)
+```
+
+
+
+
+
+```{r}
+library(pec)
+x = c2[(names(c2) %in% c("MUELLER_METHYLATED_IN_GLIOBLASTOMA", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP", "VERHAAK_GLIOBLASTOMA_CLASSICAL", "VERHAAK_GLIOBLASTOMA_MESENCHYMAL", "VERHAAK_GLIOBLASTOMA_NEURAL", "VERHAAK_GLIOBLASTOMA_PRONEURAL", "ZHENG_GLIOBLASTOMA_PLASTICITY_DN", "ZHENG_GLIOBLASTOMA_PLASTICITY_UP", "BEIER_GLIOMA_STEM_CELL_DN", "BEIER_GLIOMA_STEM_CELL_UP", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP"))|(grepl("glio", tolower(names(c2))))]
+X = list()
+for(el in unique(sapply(strsplit(names(x), "_"), function(X){X[1]}))){
+  X[[el]] = unique(unlist(x[grepl(el, names(x))]))
+}
+
+X = X[!names(X)=="VERHAAK"]
+X = c(X, x[grepl("VERHAAK", names(x))])
+names(X) = gsub("VERHAAK_GLIOBLASTOMA_", "GBM: ", names(X))
+
+#X$EPILEPSY = intersect(res[!res$gr=="nc", "hgnc"], unique(unlist(c2)))
+X$EPILEPSY = res[!res$gr=="nc", "hgnc"]
+#X$EPILEPSY = X$EPILEPSY[1:400]
+
+x = as.data.frame(flip(Nexp))
+x$surv = cli$surv[match(tolower(substr(rownames(x),1,12)), rownames(cli))]
+x$days_to_last_followup = cli$days_to_last_followup[match(tolower(substr(rownames(x),1,12)), rownames(cli))]
+x$days_to_death = cli$days_to_death[match(tolower(substr(rownames(x),1,12)), rownames(cli))]
+x$time = (sapply(as.data.frame(flip(x[,c("days_to_last_followup", "days_to_death")])), function(X){
+  if(sum(is.na(X))==2){
+    return(NA)
+  } else {
+    return(X[!is.na(X)])
+  }
+})/365.25)[rownames(x)]
+
+x$status = as.numeric((cli$vital_status[match(tolower(substr(rownames(x),1,12)), rownames(cli))]) == "dead")
+
+x = x[!is.na(x$time),]
+x = x[!is.na(x$status),]
+x$time = sapply(x$time, max, 0)
+
+models = lapply(X, function(X){
+  coxph(as.formula(paste0("Surv(time,status)~ `", paste0(intersect(X, rownames(Nexp)), collapse = "` + `"), "`")), data = x, x = T, y = T)
+})
+
+X = pec(models, data = x, formula =Surv(time,status)~1)
+
+df = data.frame(row.names = names(models),
+                concordance = sapply(models, function(el){concordance(el)$concordance}),
+                AIC = sapply(models, AIC),
+                logrank = sapply(models, function(el){summary(el)$logtest["pvalue"]}),
+                wald = sapply(models, function(el){summary(el)$waldtest["pvalue"]}))
+df$brier = crps(X, times = rev(c(1,2,5,10, max(x$time))))[rownames(df),1]
+df$R2 = as.matrix(R2(X, times = rev(c(1,2,5,10, max(x$time))))$AppErr)[4,paste0("RR.", rownames(df))]
+df$color = c(hcl.colors(length(df$concordance)-1, palette = "fall"), "#008FFF")
+df$name = rownames(df)
+
+
+df = df[order(df$concordance),]
+df$name = reorder(df$name, df$concordance)
+df$color = reorder(df$color, df$concordance)
+
+fig1modelstats = list()
+
+
+df = df[order(df$concordance),]
+df$name = reorder(df$name, df$concordance)
+df$color = reorder(df$color, df$concordance)
+
+fig1modelstats[["concordance"]] = ggplot(data = df, aes(x = name, y = concordance, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "Concordance", x = "Gene set")
+
+df = df[order(-df$AIC),]
+df$name = reorder(df$name, -df$AIC)
+df$color = reorder(df$color, -df$AIC)
+
+fig1modelstats[["AIC"]] = ggplot(data = df, aes(x = name, y = AIC, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "Akaike information criterion", x = "Gene set")
+
+df = df[order(-df$logrank),]
+df$name = reorder(df$name, -df$logrank)
+df$color = reorder(df$color, -df$logrank)
+
+fig1modelstats[["logrankp"]] = ggplot(data = df, aes(x = name, y = -log10(logrank), fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "-log(logrank test p-value)", x = "Gene set")
+
+df = df[order(-df$wald),]
+df$name = reorder(df$name, -df$wald)
+df$color = reorder(df$color, -df$wald)
+
+fig1modelstats[["wald"]] = ggplot(data = df, aes(x = name, y = -log10(wald), fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "-log(Wald test p-value)", x = "Gene set")
+
+df = df[order(-df$brier),]
+df$name = reorder(df$name, -df$brier)
+df$color = reorder(df$color, -df$brier)
+
+fig1modelstats[["brier"]] = ggplot(data = df, aes(x = name, y = brier, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "Integrated Brier score", x = "Gene set")
+
+df = df[order(df$R2),]
+df$name = reorder(df$name, df$R2)
+df$color = reorder(df$color, df$R2)
+
+fig1modelstats[["R2"]] = ggplot(data = df, aes(x = name, y = R2, fill = color))  +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_fill_manual(values = as.character(df$color)) +
+  theme_classic() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(legend.position = "none") +
+  labs(y = "R² for 2 years survival", x = "Gene set")
+```
+
+
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+save(fig1modelstats, file = "fig1modelstats.rdata")
+ggsave(ggarrange(plotlist = fig1modelstats), width = 12, height = 6, filename = "fig1modelstats.png", dpi = 400)
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(fig1modelstats, file = "fig1modelstats.rdata")
+ggsave(ggarrange(plotlist = fig1modelstats), width = 12, height = 6, filename = "fig1modelstats.png", dpi = 400)
+```
+
+
+
+
+
+```{r}
+x = c(,,,)
+# JUNK BELOW THIS LINE
+```
+
+
+
+```{r}
+rm(list = ls())
+gc()
+```
+
+
+```{r}
+library(Seurat)
+library(BisqueRNA)
+library(Biobase)
+wd = getwd()
+setwd(paste0(wd, "/dt"))
+load("all.rdata")
+```
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+load("bisque_input.Rdata")
+```
+
+
+
+
+```{r}
+scRNA$identity = scRNA$Verhaak_id
+
+scRNA
+
+scRNA$sel = ifelse(scRNA$identity == "none", "no", "yes")
+
+scRNA = subset(scRNA, subset = sel == "yes")
+
+scRNA
+```
+
+
+
+
+```{r}
+library(biomaRt)
+mart <- useMart("ENSEMBL_MART_ENSEMBL", host = "ensembl.org")
+ensembl = useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", GRCh = 38)
+trl = getBM(attributes=c("ensembl_gene_id","hgnc_symbol", "entrezgene_id", "start_position", "end_position", "chromosome_name", "strand", "gene_biotype"), mart= ensembl) #"description","phenotype_description", "mim_morbid_description", 
+trl$chromosome_name[nchar(trl$chromosome_name)>3] = gsub("_", "", substr(trl$chromosome_name[nchar(trl$chromosome_name)>3], 10, 11))
+
+x = trl[(((grepl("gene", trl$gene_biotype) & (!(grepl("pseudogene", trl$gene_biotype))))) |((grepl("protein_coding", trl$gene_biotype)))),]
+x = x[!x$hgnc_symbol == "",]
+
+dim(fSeq)
+Fhseq =  fSeq[order(apply(fSeq, 1, var)[rownames(fSeq)], decreasing = T),]
+Fhseq =  Fhseq[,order(apply(fSeq, 2, sum)[colnames(fSeq)], decreasing = T)]
+dim(Fhseq)
+
+Fhseq = Fhseq[!(is.na(match(sapply(rownames(Fhseq), function(el){
+  unlist(strsplit(el, "\\."))[1]
+}), x$ensembl_gene_id))),]
+dim(Fhseq)
+
+Fhseq = Fhseq[!(duplicated(x[match(sapply(rownames(Fhseq), function(el){
+  unlist(strsplit(el, "\\."))[1]
+}), x$ensembl_gene_id),"hgnc_symbol"])),]
+
+rownames(Fhseq) = x[match(sapply(rownames(Fhseq), function(el){
+  unlist(strsplit(el, "\\."))[1]
+}), x$ensembl_gene_id), "hgnc_symbol"]
+
+dim(Fhseq)
+
+Fhseq = Fhseq[,TCGAutils::TCGAsampleSelect(colnames(Fhseq), "01")]
+
+dim(Fhseq)
+
+Fhseq = Fhseq[,!duplicated(substr(colnames(Fhseq), 1,12))]
+
+dim(Fhseq)
+```
+
+```{r}
+x = intersect(rownames(Fhseq), rownames(scRNA@assays$integrated@data))
+```
+
+
+
+
+```{r}
+bulk.eset <- Biobase::ExpressionSet(assayData = Fhseq[x,]) #!is.na(cli[tolower(substr(colnames(Fhseq),1,12)),"seizure_history"])
+```
+
+```{r}
+sc.pheno <- data.frame(check.names=F, check.rows=F, stringsAsFactors=F,
+                       sample.ids = rownames(scRNA[[]]),
+                       SubjectName=gsub("pos", "", gsub("neg", "", scRNA$orig.ident)),
+                       cellType=scRNA$identity)
+
+sc.meta <- data.frame(labelDescription=c("sample.ids", "SubjectName", "cellType"),
+                      row.names=c("sample.ids", "SubjectName", "cellType"))
+
+sc.pdata <- AnnotatedDataFrame(data=sc.pheno, varMetadata=sc.meta)
+
+sc.eset <- ExpressionSet(assayData=as.matrix(scRNA@assays$RNA@counts[x,rownames(scRNA[[]])]), phenoData=sc.pdata)
+```
+
+
+
+
+
+```{r}
+rm(list = ls()[!ls() %in% c("Fhseq", "cli", "scRNA", "sc.eset", "bulk.eset", "flip", "dropNA")])
+bisque.res <- ReferenceBasedDecomposition(bulk.eset, sc.eset, markers=NULL, use.overlap = F)
+```
+
+```{r}
+#dim(bisque.res$bulk.props)
+```
+
+```{r}
+#setwd(paste0(wd, "/scRNA_res"))
+#load(file = "bisque_suva.Rdata")
+```
+
+
+
+```{r}
+X = as.data.frame(flip(bisque.res$bulk.props))
+X$epi = cli[substr(tolower(rownames(X)),1,12),"seizure_history"]
+
+lapply(rownames(bisque.res$bulk.props), function(el){
+  wilcox.test(as.formula(paste0(el, "~epi")), data = X)
+})
+```
+
+
+
+```{r}
+X$idh = cli[substr(tolower(rownames(X)),1,12),"IDH.status"]
+
+lapply(rownames(bisque.res$bulk.props), function(el){
+  wilcox.test(as.formula(paste0(el, "~idh")), data = X)
+})
+```
+
+
+```{r}
+X$proneural
+```
+
+
+```{r}
+x = c(,,,)
+x = c2[names(c2) %in% c("VERHAAK_GLIOBLASTOMA_CLASSICAL", "VERHAAK_GLIOBLASTOMA_MESENCHYMAL", "VERHAAK_GLIOBLASTOMA_NEURAL", "VERHAAK_GLIOBLASTOMA_PRONEURAL", "MUELLER_METHYLATED_IN_GLIOBLASTOMA", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP",  "ZHENG_GLIOBLASTOMA_PLASTICITY_DN", "ZHENG_GLIOBLASTOMA_PLASTICITY_UP", "BEIER_GLIOMA_STEM_CELL_DN", "BEIER_GLIOMA_STEM_CELL_UP", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_DN", "COLIN_PILOCYTIC_ASTROCYTOMA_VS_GLIOBLASTOMA_UP", "JOHANSSON_GLIOMAGENESIS_BY_PDGFB_DN", "JOHANSSON_GLIOMAGENESIS_BY_PDGFB_UP")]
+
+#
+
+
+x[["Upregulated"]] = rownames(res[res$gr == "Upregulated",])
+x[["Downregulated"]] = rownames(res[res$gr == "Downregulated",])
+
+a = matrix(0, nrow = length(names(x)), ncol = length(intersect(unique(unlist(x)), rownames(Nexp))), dimnames = list(c = names(x), r = intersect(unique(unlist(x)), rownames(Nexp))))
+x = lapply(x, intersect, y = colnames(a))
+
+for(el in 1:length(x)){
+  a[el, x[[el]]] = 1
+}
+
+a = a[rowSums(a)>0, colSums(a)>0]
+
+a[,1:10]
+
+A = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+
+
+x = as.data.frame(flip(A))
+for(el in colnames(x)[grepl("_UP", colnames(x))]){
+  el = gsub("_UP", "", el)
+  x[,el] = x[,paste0(el, "_UP")] - mean(x[,paste0(el, "_UP")]) - x[,paste0(el, "_DN")] + mean(x[,paste0(el, "_DN")])
+  x = x[,!colnames(x)==paste0(el, "_UP")]
+  x = x[,!colnames(x)==paste0(el, "_DN")]
+}
+
+x$Epilepsy = x$Upregulated - x$Downregulated - mean(x$Upregulated) + mean(x$Downregulated)
+#x = x[,!(colnames(x) %in% c("Upregulated", "Downregulated"))]
+
+colnames(x) = tolower(colnames(x))
+colnames(x) = gsub("glioblastoma", "GBM", colnames(x))
+colnames(x) = gsub("pilocytic_astrocytoma", "PA", colnames(x))
+
+colnames(x) = gsub("_", " ", colnames(x))
+
+'colnames(x) = sapply(colnames(x), function(el){
+  el = unlist(strsplit(el, " "))
+  if(length(el)>1){
+    el = el[2:length(el)]
+  }
+  el = paste(el, collapse = " ")
+})'
+
+colnames(x) = sapply(colnames(x), function(el){
+  el = paste0(toupper(substr(el, 1, 1)), substr(el, 2, nchar(el)))
+})
+
+x$surv = cli[tolower(substr(rownames(x),1,12)),"surv"]
+x = x[,!(colnames(x) %in% c("Epilepsy"))]
+#x = x[,rev(colnames(x))]
+model = coxph(surv~., data = x)
+#model
+summary(model)
+```
+
+
+```{r}
+ggsave(plot = p, filename = "t1.png", width = 8, height = 8, dpi = 400)
+```
+```{r}
+paste0("PC1, explains ", signif(100*apply(x$x, 2, var)["PC1"] / sum(apply(x$x, 2, var)),3), "% of variability")
+paste0("PC2, explains ", signif(100*apply(x$x, 2, var)["PC2"] / sum(apply(x$x, 2, var)),3), "% of variability")
+```
+
+
+```{r}
+
+#x
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig1A.pdf",width=18,height=15)
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("seizure_history","neoplasm_histologic_grade","histological_type","IDH.status","X1p.19q.codeletion")] #"location","age_at_initial_pathologic_diagnosis","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status"
+  
+  colnames(x) = c("Seizure history", "Grade", "Histology", "IDH", "Cod1p19q") #"Location", "Age", "TERT", "Karnofsky", "MGMT"
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             #Age = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             #Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"))
+  
+  ha <- HeatmapAnnotation(df=x,name = colnames(x),col=col,show_legend = T,annotation_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20)),)
+  
+  Heatmap(M,
+          gap = unit(0.1, "in"),
+          top_annotation = ha,
+          column_title = cn,
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = F,
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Normalized gene expression level",
+          column_title_gp = gpar(fontsize = 36),
+          row_title_gp = gpar(fontsize = 30),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          cluster_columns = F,
+          #clustering_distance_columns = "canberra",
+          #clustering_method_columns = "average",
+          split = relevel(x = as.factor(res[match(rownames(Xn),rownames(res)),]$gr), ref = "Upregulated"),
+          col = colorRamp2(c(min(as.matrix(M)), median(as.matrix(M)) - 2*sd(as.matrix(M)),median(as.matrix(M)) - 1*sd(as.matrix(M)), median(as.matrix(M)), median(as.matrix(M)) + 1*sd(as.matrix(M)),  median(as.matrix(M)) + 2*sd(as.matrix(M)), max(as.matrix(M))),
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+'x = sigg[rownames(Xn),c("Grade", "Histology", "Location", "Age", "IDH", "Cod1p19q", "TERT","Prognostic","Karnofsky","MGMT")]
+
+ha=HeatmapAnnotation(df = x, 
+                     which = "row",show_annotation_name = T,
+                     show_legend = F,
+                     #annotation_legend_param = list(title_gp = gpar(fontsize = 25),labels_gp = gpar(fontsize = 15)),
+                     col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+                               Age = c("NS" = "gray", "Lower" = "white", "Higher" = "black"),
+                               TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+                               #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+                               Cod1p19q = c("NS" = "gray", "Codel" = "brown", "Non-codel" = "cornflowerblue"),
+                               Histology = c("NS" = "gray", "Astrocytic" = "blue", "Oligodendroglial"  = "yellow"),
+                               Grade = c("NS" = "gray", "Lower" = "forestgreen", "Higher" = "pink"),
+                               Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+                               Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+                               #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+                               #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+                               Karnofsky = c("NS" = "gray", "Higher" = "darkslateblue", "Lower"="lawngreen"),
+                               MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral")))'
+
+ht1 = Ht(M=Xn, lg="yes", cn = "Heatmap of gene expression")
+#ht2 = Ht(M=Xn[,cli[substr(tolower(colnames(Xn)),1,12),]$seizure_history=="yes"], lg="no", cn = "Seizure history")
+draw(ht1, heatmap_legend_side = "bottom", show_annotation_legend=T) #+ha
+dev.off()
+```
+
+
+
+```{r}
+epi <- as.character(cli[tolower(substr(colnames(nexp),1,12)),"seizure_history"])
+pheno <- new("AnnotatedDataFrame", data = data.frame(epi), varMetadata = data.frame(labelDescription="epi"))
+rownames(pheno@data) <- colnames(nexp)
+eset <- new("ExpressionSet", exprs = nexp, phenoData = pheno)
+eset
+```
+```{r}
+a = matrix(0, nrow = length(names(c2)), ncol = length(intersect(unique(unlist(c2)), rownames(nexp))), dimnames = list(c = names(c2), r = intersect(unique(unlist(c2)), rownames(nexp))))
+c2 = lapply(c2, intersect, y = colnames(a))
+
+for(el in 1:length(c2)){
+  a[el, c2[[el]]] = 1
+}
+
+a = a[rowSums(a)>0, colSums(a)>0]
+
+a[1:10,1:10]
+```
+
+```{r}
+library(GSEAlm)
+A = GSNormalize(dataset = nexp[colnames(a),], incidence = a)
+```
+
+
+```{r}
+x = cli[substr(tolower(colnames(A)),1,12),"IDH.status"]
+X = as.data.frame(flip(apply(A, 1, function(X){
+  #print(cli[substr(tolower(names(X)),1,12),"seizure_history"])
+  unlist(wilcox.test(gs~epi, data.frame(epi = x, gs = X), conf.int = T)[c("estimate", "p.value")])
+})))
+X
+```
+```{r}
+min(p.adjust(X$p.value, method = "BH"))
+```
+```{r}
+X[order(X$p.value),]
+```
+
+
+
+```{r}
+
+
+
+x = rep[REP[REP$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X = X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+
+pheno <- new("AnnotatedDataFrame", data = data.frame(epi), varMetadata = data.frame(labelDescription="epi"))
+rownames(pheno@data) <- colnames(X)
+
+
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+
+At = gsealmPerm(eSet = eset, formula = ~ epi, mat = a,nperm = 1000, detailed = T)
+At$pvalues
+
+A = GSNormalize(dataset = X, incidence = a)
+```
+
+
+```{r}
+x = c(,,,)
+```
+
+```{r}
+library(msigdb)
+Hs.c2 = msigdb.genesets(sets = "C2.CP", type="symbol", species = "human")
+```
+
+
+```{r}
+cor.test(x = res$stat, y = res$stat_surv)
+```
+
+
+```{r}
+library(curatedTCGAData)
+library(MultiAssayExperiment)
+library(TCGAutils)
+```
+
+```{r}
+cli
+```
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+#load("bookmark.RData")
+```
+
+```{r}
+
+
+Overlap = function(list1, list2, genesize){
+  X = matrix(0, nrow = length(list1), ncol = length(list2))
+  rownames(X)=names(list1)
+  colnames(X)=names(list2)
+  ll1=length(list1)
+  ll2=length(list2)
+  odds = X
+  pval = X
+  for(rn in rownames(X)){
+    for(cn in colnames(X)){
+      x = length(intersect(list1[[rn]], list2[[cn]]))
+      x = c(x, length(list1[[rn]])-x, length(list2[[cn]])-x, genesize-(x + (length(list1[[rn]])-x) + (length(list2[[cn]])-x)))
+      x = matrix(x, nrow = 2)
+      colnames(x) = c("list1", "no_list1")
+      rownames(x) = c("list2", "no_list2")
+      x = fisher.test(x, alternative = "greater")
+      odds[rn,cn] = x$estimate
+      pval[rn,cn] = x$p.value
+    }
+  }
+  odds = log2(odds)
+  odds[odds<0]=0
+  pval = matrix(p.adjust(pval, method = "BH"), ncol = 2)
+  pval = signif(pval, digits = 3)
+  pval[pval>0.1]="N.S."
+  colnames(pval)=colnames(odds)
+  rownames(pval)=rownames(odds)
+  print(pval)
+  print(odds)
+  x=Heatmap(odds, name = "log2 OR", cluster_rows = F, cluster_columns = F,
+            col = c("#FFFFFF","#FF0007"),
+            #column_names_gp = gpar(fontsize = 20),
+            #row_names_gp = gpar(fontsize = 20),
+            #heatmap_legend_param = list(title_gp = gpar(fontsize = 20),labels_gp = gpar(fontsize = 15)),
+            row_names_side = "left")
+  
+  r=0
+  draw(x, heatmap_legend_side = "left")
+  for(rn in rownames(X)){
+    c = 0
+    for(cn in colnames(X)){
+      decorate_heatmap_body("log2 OR", {
+        grid.text(pval[rn,cn], (c+0.5)/2, ((16-(r+0.5))/16), default.units = "npc", gp = gpar(col = "#008FFF", cex = 1))
+      })
+      c = c+1
+    }
+    r=r+1
+  }
+}
+
+multivar = function(M,f,e){
+  X = data.frame(names=e,p=1,Z=0,uCI=0,lCI=0)
+  rownames(X)=X$names
+  for(el in e){
+    x = summary(coxph(as.formula(paste(f, " + `", el, "`", sep="")),
+      data = M))
+    X[el,"p"] = x$coefficients[grepl(el,rownames(x$coefficients)),"Pr(>|z|)"]
+    X[el,"Z"] = x$conf.int[grepl(el,rownames(x$conf.int)),"exp(coef)"]
+    X[el,"lCI"] = x$conf.int[grepl(el,rownames(x$conf.int)),"lower .95"]
+    X[el,"uCI"] = x$conf.int[grepl(el,rownames(x$conf.int)),"upper .95"]
+  }
+  #  X$padj = p.adjust(X$p, method = "BH")
+   X$Z = log2( X$Z)
+   X$uCI = log2( X$uCI)
+   X$lCI = log2( X$lCI)
+  g = ifelse( X$Z<0, "Positive","Negative")
+  g[ X$p>0.05] = "NS"
+  X$g=g
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+wilcoxon = function(M,resp,hi,lo){
+  X = data.frame(names=rownames(M),p=1,Z=0)
+  rownames(X)=X$names
+  resp = as.character(resp)
+  resp[resp==lo]="0"
+  resp[resp==hi]="1"
+  resp = as.numeric(resp)
+  g = NULL
+  for(EL in rownames(M)){
+    df = data.frame(pop = as.matrix(M)[EL,],
+                    fus = resp)
+    x = wilcox.test(pop ~ fus, data = df, conf.int=T)
+    X[EL,"p"] = x$p.value
+    X[EL,"Z"] = x$estimate
+    g = c(g, ifelse(x$estimate<0, "High","Low"))
+  }
+  X$padj = p.adjust(X$p, method = "BH")
+  g[X$padj>0.05] = "NS"
+  X$g=g
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+kruskal = function(M,resp){
+  X = data.frame(names=rownames(M),p=1,Z=0,g=" ")
+  X$g = as.character(X$g)
+  rownames(X)=X$names
+  for(el in rownames(M)){
+    df = data.frame(pop = as.matrix(M)[el,],
+                    clust = as.factor(resp))
+    x = kruskal.test(pop ~ clust, data = df)
+    X[el,"p"] = x$p.value
+    z=NULL
+    for(EL in 1:length(unique(resp))){
+      z = c(z, mean(as.matrix(M)[el,resp==as.character(unique(resp)[EL])]))
+    }
+    z=z/(mean(as.matrix(M)[el,]))
+    names(z)=as.character(unique(resp))
+    X[el,"Z"] = (max(z)-min(z))
+    X[el,"g"] = names(z)[z==max(z)]
+  }
+  X$padj = p.adjust(X$p, method = "BH")
+  X[order(X$p),!colnames(X)=="names"]
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+cs = function(M,resp){
+  X = data.frame(names=rownames(M),p=1,Z=0)
+  rownames(X)=X$names
+  for(el in rownames(M)){
+    df = data.frame(pop = as.matrix(M)[el,], surv = resp)
+    x = summary(coxph(surv ~ pop, data = df))
+    X[el,"p"] = x$coefficients[,5]
+    X[el,"Z"] = x$coefficients[,4]
+  }
+  X$g = ifelse(X$Z<0, "Positive", "Negative")
+  X$padj = p.adjust(X$p, method = "BH")
+  X$g[X$padj>0.05] = "NS"
+  X[order(X$p),!colnames(X)=="names"]
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+spearman = function(M,resp){
+  X = data.frame(names=rownames(M),p=1,Z=0)
+  rownames(X)=X$names
+  for(el in rownames(M)){
+    x = cor.test(x = resp, y = as.matrix(M)[el,],method = "spearman")
+    X[el,"p"] = x$p.value
+    X[el,"Z"] = x$estimate
+  }
+  X$g = ifelse(X$Z>0, "Higher", "Lower")
+  X$padj = p.adjust(X$p, method = "BH")
+  X$g[X$padj>0.05] = "NS"
+  X[order(X$p),!colnames(X)=="names"]
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+pearson = function(M,resp){
+  X = data.frame(names=rownames(M),p=1,Z=0)
+  rownames(X)=X$names
+  for(el in rownames(M)){
+    x = cor.test(x = resp, y = as.matrix(M)[el,],method = "pearson")
+    X[el,"p"] = x$p.value
+    X[el,"Z"] = x$estimate
+  }
+  X$g = ifelse(X$Z>0, "Higher", "Lower")
+  X$padj = p.adjust(X$p, method = "BH")
+  X$g[X$padj>0.05] = "NS"
+  X[order(X$p),!colnames(X)=="names"]
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+spearman = function(M,resp){
+  X = data.frame(names=rownames(M),p=1,Z=0)
+  rownames(X)=X$names
+  for(el in rownames(M)){
+    x = cor.test(x = resp, y = as.matrix(M)[el,],method = "spearman")
+    X[el,"p"] = x$p.value
+    X[el,"Z"] = x$estimate
+  }
+  X$g = ifelse(X$Z>0, "Higher", "Lower")
+  X$padj = p.adjust(X$p, method = "BH")
+  X$g[X$padj>0.05] = "NS"
+  X[order(X$p),!colnames(X)=="names"]
+  return(X[order(X$p),!colnames(X)=="names"])
+}
+
+
+
+ft = function(df, traits){
+  x = unique(df[,traits[1]])
+  y = unique(df[,traits[2]])
+  x = dropNA(x)
+  y = dropNA(y)
+  m = matrix(0, nrow = length(x), ncol = length(y), dimnames = list(x, y))
+  
+  for(el in x){
+    for(EL in y){
+      m[el,EL] = sum(dropNA((df[,traits[1]]==el)&(df[,traits[2]]==EL)))
+    }
+  }
+  return(m)
+}
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+load("all.Rdata", verbose = F)
+load("res_epi.Rdata")
+load("bookmarkGSEA.RData")
+load("bookmarkDEG.RData")
+#load("res_epi.Rdata")
+#load("Xcli.Rdata")
+```
+
+
+
+```{r}
+mart <- useMart("ENSEMBL_MART_ENSEMBL", host = "ensembl.org")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=mart)
+trl = getBM(attributes=c("ensembl_gene_id","hgnc_symbol", "entrezgene", "start_position", "end_position", "chromosome_name", "strand", "description","phenotype_description", "mim_morbid_description"), mart= ensembl)
+trl$chromosome_name[nchar(trl$chromosome_name)>3] = gsub("_", "", substr(trl$chromosome_name[nchar(trl$chromosome_name)>3], 10, 11))
+```
+
+
+
+```{r}
+cc=data.frame(trait=colnames(cli))
+rownames(cc)=cc$trait
+cc$type = "no"
+for(el in as.character(cc$trait)){
+  cc[el, "type"]=typeof(cli[,el])
+}
+for(el in c("bcr_barcode", "disease_code", "days_to_birth", "days_to_death", "age_at_initial_pathologic_diagnosis", "days_to_birth", "days_to_death", "days_to_initial_pathologic_diagnosis", "days_to_last_followup", "icd_10", "icd_o_3_histology", "seizure_history", "first_presenting_symptom", "icd_o_3_site","Case","SO", "surv")){
+  cc[el, "type"]="no"
+}
+cc$rawp=1
+for (el in(rownames(cc[cc$type=="integer",]))){
+  counts=as.data.frame(xtabs(as.formula(paste("~`", el, "` + seizure_history", sep="")), data = cli))
+  table = xtabs(as.formula(paste("Freq~`", el, "` + seizure_history", sep="")), data=counts)
+  FT = fisher.test(table, simulate.p.value=TRUE, B=1e6)
+  cc[el,"rawp"]=FT$p.value
+}
+for (el in(rownames(cc[cc$type=="double",]))){
+  WT = wilcox.test(as.formula(paste("`" , el, "` ~ seizure_history", sep = "")),data=cli, alternative="two.sided")
+  cc[el,"rawp"]=WT$p.value
+}
+cc$adjp=p.adjust(cc$rawp, method = "BH")
+cc[order(cc$rawp),]
+```
+
+```{r}
+cli[,c("seizure_history", "localization")]
+```
+
+
+
+
+
+```{r}
+# *** DEG ***
+```
+
+```{r}
+x=matrix(as.character(cli[substr(tolower(colnames(fhseq)),1,12),]$seizure_history),ncol=1)
+rownames(x)=colnames(fhseq)
+colnames(x)="seizure_history"
+```
+
+
+
+```{r}
+# *** heatmap ***
+```
+
+```{r}
+nexp = ds_epi$VST
+sigg = res[!res$gr=="nc",]
+
+X = flip(nexp[rownames(res[!res$gr=="nc",]),])
+
+'
+Xn = apply(X,2,rank)
+Xn = Xn -1
+Xn = Xn/max(Xn)
+'
+
+f=function(x){
+  #x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x)
+  x=x/sd(x)
+}
+
+Xn = apply(X,2,f)
+
+Xn=as.data.frame(Xn)
+Xcli = cbind(Xn, cli[substr(tolower(gsub("\\.", "-", rownames(Xn))), 1, 12), ])
+Xn=flip(Xn)
+
+Xn = Xn[,order(colMeans(Xn[res[res$gr=="Upregulated",]$hgnc,])-colMeans(Xn[res[res$gr=="Downregulated",]$hgnc,]), decreasing = T)]
+```
+
+
+
+```{r}
+x = cli[tolower(substr(colnames(Xn),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","TERT.expression.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "TERT", "Cod1p19q", "Location", "Grade", "Histology")
+#x
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig1A.pdf",width=18,height=15)
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("seizure_history","neoplasm_histologic_grade","histological_type","IDH.status","X1p.19q.codeletion")] #"location","age_at_initial_pathologic_diagnosis","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status"
+  
+  colnames(x) = c("Seizure history", "Grade", "Histology", "IDH", "Cod1p19q") #"Location", "Age", "TERT", "Karnofsky", "MGMT"
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             #Age = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             #Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"))
+  
+  ha <- HeatmapAnnotation(df=x,name = colnames(x),col=col,show_legend = T,annotation_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20)),)
+  
+  Heatmap(M,
+          gap = unit(0.1, "in"),
+          top_annotation = ha,
+          column_title = cn,
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = F,
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Normalized gene expression level",
+          column_title_gp = gpar(fontsize = 36),
+          row_title_gp = gpar(fontsize = 30),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          cluster_columns = F,
+          #clustering_distance_columns = "canberra",
+          #clustering_method_columns = "average",
+          split = relevel(x = as.factor(res[match(rownames(Xn),rownames(res)),]$gr), ref = "Upregulated"),
+          col = colorRamp2(c(min(as.matrix(M)), median(as.matrix(M)) - 2*sd(as.matrix(M)),median(as.matrix(M)) - 1*sd(as.matrix(M)), median(as.matrix(M)), median(as.matrix(M)) + 1*sd(as.matrix(M)),  median(as.matrix(M)) + 2*sd(as.matrix(M)), max(as.matrix(M))),
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+'x = sigg[rownames(Xn),c("Grade", "Histology", "Location", "Age", "IDH", "Cod1p19q", "TERT","Prognostic","Karnofsky","MGMT")]
+
+ha=HeatmapAnnotation(df = x, 
+                     which = "row",show_annotation_name = T,
+                     show_legend = F,
+                     #annotation_legend_param = list(title_gp = gpar(fontsize = 25),labels_gp = gpar(fontsize = 15)),
+                     col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+                               Age = c("NS" = "gray", "Lower" = "white", "Higher" = "black"),
+                               TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+                               #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+                               Cod1p19q = c("NS" = "gray", "Codel" = "brown", "Non-codel" = "cornflowerblue"),
+                               Histology = c("NS" = "gray", "Astrocytic" = "blue", "Oligodendroglial"  = "yellow"),
+                               Grade = c("NS" = "gray", "Lower" = "forestgreen", "Higher" = "pink"),
+                               Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+                               Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+                               #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+                               #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+                               Karnofsky = c("NS" = "gray", "Higher" = "darkslateblue", "Lower"="lawngreen"),
+                               MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral")))'
+
+ht1 = Ht(M=Xn, lg="yes", cn = "Heatmap of gene expression")
+#ht2 = Ht(M=Xn[,cli[substr(tolower(colnames(Xn)),1,12),]$seizure_history=="yes"], lg="no", cn = "Seizure history")
+draw(ht1, heatmap_legend_side = "bottom", show_annotation_legend=T) #+ha
+dev.off()
+```
+
+
+
+
+
+
+
+
+```{r}
+'
+x = as.character(Xcli$tumor_location)
+
+x[x=="supratentorial, temporal lobe"]="temporal lobe"
+x[grepl("supratentorial", x)] = "supratentorial"
+x[grepl("posterior fossa", x)] = "infraratentorial"
+
+Xcli$location = x
+
+annot_df <- data.frame(IDH = Xcli$IDH.status, Chr1p19q = Xcli$X1p.19q.codeletion, histology = Xcli$histological_type, grade = Xcli$neoplasm_histologic_grade)
+Ht = function(cl, cn="no", title=""){
+  annot_df <- data.frame(IDH = Xcli[Xcli$seizure_history==cl,]$IDH.status, Chr1p19q = Xcli[Xcli$seizure_history==cl,]$X1p.19q.codeletion, histology = Xcli[Xcli$seizure_history==cl,]$histological_type, grade = Xcli[Xcli$seizure_history==cl,]$neoplasm_histologic_grade, location = Xcli[Xcli$seizure_history==cl,]$location)
+  col = list(IDH = c("WT" = "darkorchid4", "Mutant" = "darkolivegreen4"),
+             Chr1p19q = c("codel" = "sienna4", "non-codel" = "slategray2"),
+             histology = c("astrocytoma" = "blue", "oligoastrocytoma" = "green", "oligodendroglioma" = "brown"),
+             grade = c("g2" = "white", "g3" = "black"),
+             location = c("temporal lobe" = "yellow", "supratentorial" = "navyblue"))
+  ha <- HeatmapAnnotation(annot_df, col = col)
+  Heatmap(flip(Xn[rownames(Xcli)[Xcli$seizure_history==cl],]),
+          #row_order = ro,
+          show_column_names = F,
+          col = colorRamp2(c(min(as.matrix(Xn)), median(as.matrix(Xn)) - 2*sd(as.matrix(Xn)),median(as.matrix(Xn)) - sd(as.matrix(Xn)), median(as.matrix(Xn)), median(as.matrix(Xn)) + sd(as.matrix(Xn)),  median(as.matrix(Xn)) + 2*sd(as.matrix(Xn)), max(as.matrix(Xn))),
+                           c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")),
+          show_column_dend = F,
+          show_row_dend = F,
+          show_heatmap_legend = tolower(cn)=="yes",
+          show_row_names = F,
+          name = "Gene expression",
+          column_title_gp = gpar(fontsize = 30),
+          row_title_gp = gpar(fontsize = 30),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 14)),
+          #top_annotation = ha,
+          column_title = title,
+          split = res[match(colnames(Xn),rownames(res)),]$gr,
+          clustering_method_columns = "ward.D2")
+}
+p = NULL
+counts=as.data.frame(xtabs(~IDH.status + seizure_history, data = Xcli))
+table = xtabs(Freq ~ IDH.status + seizure_history, data=counts)
+FT = fisher.test(table, simulate.p.value=TRUE,B=1e4)
+p = c(p, round(FT$p.val, 3))
+counts=as.data.frame(xtabs(~X1p.19q.codeletion + seizure_history, data = Xcli))
+table = xtabs(Freq ~ X1p.19q.codeletion + seizure_history, data=counts)
+FT = fisher.test(table, simulate.p.value=TRUE,B=1e4)
+p = c(p, round(FT$p.val, 3))
+counts=as.data.frame(xtabs(~histological_type + seizure_history, data = Xcli))
+table = xtabs(Freq ~ histological_type + seizure_history, data=counts)
+FT = fisher.test(table, simulate.p.value=TRUE,B=1e4)
+p = c(p, round(FT$p.val, 3))
+counts=as.data.frame(xtabs(~neoplasm_histologic_grade + seizure_history, data = Xcli))
+table = xtabs(Freq ~ neoplasm_histologic_grade + seizure_history, data=counts)
+FT = fisher.test(table,  simulate.p.value=TRUE,B=1e4)
+p = c(p, round(FT$p.val, 3))
+P = rep("p < 0.001", 4)
+for (el in 1:4){
+  if(p[el]>0.001){
+    P[el] = paste("p =", p[el])
+  }
+}
+
+ht1 = Ht("yes", "no", "Seizure history")
+ht2 = Ht("no","yes", "No seizure history")
+
+
+x=sigg[colnames(Xn),]
+rownames(x)=colnames(Xn)
+x = x[, c("Prognostic", "Histology", "Grade", "Codeletion1p19q", "IDHstatus", "Age")]
+ha=HeatmapAnnotation(df = x, 
+                     which = "row",show_annotation_name = T,
+                     annotation_legend_param = list(title_gp = gpar(fontsize = 25),labels_gp = gpar(fontsize = 15)),
+                     col = list(Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+                                                        Age = c("NS" = "gray", "Younger" = "yellow", "Older" = "navyblue"),
+                                                        Histology = c("NS" = "gray", "Astrocytoma" = "blue", "Oligoastrocytoma" = "green", "Oligodendroglioma" = "brown"),
+                                                        Grade = c("NS" = "gray", "G2" = "white", "G3" = "black"),
+                                                        Codeletion1p19q = c("NS" = "gray", "Yes" = "sienna4", "No" = "slategray4"),
+                                                        IDHstatus = c("NS" = "gray", "WT" = "darkorchid4", "Mutant" = "darkolivegreen4")))
+
+ht_list  = ht1+ht2+ha
+setwd("C:\\Users\\Szymon\\Documents\\Nencki\\TCGA")
+png(file=paste("epi_ht", ".png", sep = ""),width=1524,height=750)
+draw(ht_list, heatmap_legend_side = "right", show_annotation_legend=F)
+
+
+n = 0
+for(an in colnames(annot_df)) {
+    n = n + 1
+    decorate_annotation(an, {
+        grid.text(P[n], x=unit(1, "npc") + unit(140 +2*n, "mm"), y=unit(1, "npc") - unit(2, "mm"), default.units = "npc", rot=90,just = "left")
+    })
+}
+
+
+dev.off()
+'
+```
+
+```{r}
+#VERSET
+```
+
+```{r}
+#Y to macierza z ekspresja
+#ENS to macierz z nazwami genow (kolumna 1) i nazwami sond (kolumna 2)
+#gr1 i gr2 to kolumny zawierajace probki z porownywanych grup
+map=function(Y,ENS,gr1,gr2){
+    Y=Y[apply(Y,1,function(y)   (length(gr1)-sum(is.na(y[gr1]))>1) & (length(gr2)-sum(is.na(y[gr2]))>1)    ),]
+    Y=Y[apply(Y,1, function(y)  ((sd(y[gr1],na.rm=T)>0) & (sd(y[gr2],na.rm=T)>0)) ),]
+    ENS=ENS[ENS[,2]!="",]
+    ENS=ENS[ENS[,2]%in%rownames(Y),]
+    id_l=tapply(as.character(ENS[,1]),as.character(ENS[,2]),function(z) length(unique(z)))
+    ENS=ENS[ENS[,2]%in%names(id_l[id_l==1]),]
+    ens_list=tapply(as.character(ENS[,2]),as.character(ENS[,1]),function(x) list(unique(x)))
+    ens_list1=unlist(ens_list[sapply(ens_list,length)==1])
+    V1=Y[ens_list1,]
+    rownames(V1)=names(ens_list1)
+    ens_list2=ens_list[!names(ens_list)%in%names(ens_list1)]
+    {
+        if (length(ens_list2)>0){
+            V2=t(sapply(ens_list2,function(x){
+                AA=Y[x,]
+                aa=apply(AA,1,function(y) t.test(y[gr1],y[gr2])$p.val)
+                as.numeric(AA[names(which(aa==min(aa)))[1],])
+            }))
+            rownames(V2)=names(ens_list2)
+            colnames(V2)=colnames(V1)
+            V=rbind(V1,V2)
+        }
+        else
+            V=V1
+    }
+    V=V[sort(rownames(V)),]
+    V
+}
+```
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+e=read.table("GSE55918_Matrix_GliomaClusteringAnalysis.txt", sep="\t", header = T)
+rownames(e)=as.character(e$Probe.set.ID)
+e=e[,!(colnames(e)=="Probe.set.ID")]
+
+es = read.csv("GSE55918.csv")
+es=as.data.frame(es)
+
+colnames(es)=c("sample", "file", "source", "organism", "data_set", "array", "download", "study_design", "clustering", "grade", "histology", "age", "surv_month", "censor", "treatment_type", "chemotherapy")
+es$nn = paste("sample_", 1:length(es$sample), sep = "")
+
+x = as.character(es$sample)
+x[es$data_set=="E-MEXP-567"] = gsub("-", ".", x[es$data_set=="E-MEXP-567"])
+x[!is.na(as.numeric(substr(es$sample, 1, 1)))] = paste("X", x[!is.na(as.numeric(substr(es$sample, 1, 1)))], sep = "")
+x[es$data_set=="Rich et al."] = gsub("-", ".", x[es$data_set=="Rich et al."])
+x[es$data_set=="REMBRANDT"] = gsub("-", ".", x[es$data_set=="REMBRANDT"])
+x = gsub("APEEK_p_TCGA_GBM16-Ov15_Expr_HT_HG-U133A_96-HTA_", "APEEK_p_TCGA_GBM16.Ov15_Expr_HT_HG.U133A_96.HTA_", x)
+x = gsub("BONES_p_TCGA_Batch8_9_RNA_HT_HG-U133A_96-HTA_", "BONES_p_TCGA_Batch8_9_RNA_HT_HG.U133A_96.HTA_", x)
+x = gsub("FEAST_p_TCGA_B20_21_Expression_HT_HG-U133A_96-HTA_", "FEAST_p_TCGA_B20_21_Expression_HT_HG.U133A_96.HTA_", x)
+x = gsub("MULEY_p_TCGA_b53and79_Expr_HT_HG-U133A_24-HTA_", "MULEY_p_TCGA_b53and79_Expr_HT_HG.U133A_24.HTA_", x)
+x = gsub("NIDUS_p_TCGA_Batch10_RNA_HT_HG-U133A_96-HTA_", "NIDUS_p_TCGA_Batch10_RNA_HT_HG.U133A_96.HTA_", x)
+x = gsub("SOCKS_p_TCGA_31_38_RX14_HT_HG-U133A_96-HTA_", "SOCKS_p_TCGA_31_38_RX14_HT_HG.U133A_96.HTA_", x)
+x = gsub("SPANS_p_TCGA_Batch60_62_Expr_HT_HG-U133A_24-HTA_", "SPANS_p_TCGA_Batch60_62_Expr_HT_HG.U133A_24.HTA_", x)
+x = gsub("TALAR_p_TCGA_Batch62_Expr_HT_HG-U133A_24-HTA_", "TALAR_p_TCGA_Batch62_Expr_HT_HG.U133A_24.HTA_", x)
+x = gsub("TARRE_p_MultiPlate_TCGA_SS_MA_Ref_HT_HG-U133A_96-HTA_", "TARRE_p_MultiPlate_TCGA_SS_MA_Ref_HT_HG.U133A_96.HTA_", x)
+x = gsub("URGED_p_TCGA_Pop_May2011_HT_HG-U133A_96-HTA_", "URGED_p_TCGA_Pop_May2011_HT_HG.U133A_96.HTA_", x)
+x = gsub("WARNS_p_TCGA_b79_Expr_HT_HG-U133A_24-HTA_", "WARNS_p_TCGA_b79_Expr_HT_HG.U133A_24.HTA_", x)
+
+es$on = x
+
+colnames(e) = es$nn[match(colnames(e), es$on)]
+
+
+es$surv_month[es$surv_month=="Null"]=NA
+es$surv_month=as.numeric(as.character(es$surv_month))
+es$surv =  with(es, Surv(surv_month/12, censor == 1))
+
+es$grade[es$grade=="null"]=NA
+es$grade=gsub(" ", "", as.character(es$grade))
+
+'
+mart37 <- useMart("ENSEMBL_MART_ENSEMBL", host="grch37.ensembl.org")
+ensembl37 = useDataset("hsapiens_gene_ensembl",mart=mart37)
+#trl = getBM(attributes=c("hgnc_symbol", "entrezgene"), mart= ensembl)
+trl37 = getBM(attributes=c("hgnc_symbol", "entrezgene"), mart= ensembl37)
+'
+
+annot = data.frame(ID = rownames(e), entrez = gsub("_at", "", rownames(e)))
+x = as.character(trl[match(annot$entrez, trl$entrezgene),"hgnc_symbol"])
+x[x=="GABRB2"]="GABBR2"
+x[x=="GPR98"]="ADGRV1"
+annot$hgnc = x
+
+E=map(Y=e, ENS = as.matrix(annot[,c("hgnc", "ID")]), gr1=as.character(es[(es$grade=="G4")&(!is.na(es$grade)),]$nn), gr2=as.character(es[(!es$grade=="G4")&(!is.na(es$grade)),]$nn))
+
+#E = as.data.frame(flip(E))
+#E$surv = es[match(es$nn, rownames(E)),]$surv
+```
+
+
+```{r}
+y = es$surv
+E = as.matrix(E[,!is.na(y)])
+E = E[rowSums(is.na(E))<500,]
+y = y[!is.na(y)]
+
+ds_verset = cs(E, y)
+res$pvalue_verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$p
+res$padj_verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$padj
+res$stat_verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$Z
+res$verset = ds_verset[match(rownames(res), rownames(ds_verset)),]$g
+```
+
+```{r}
+sigg = res[!res$gr=="nc",]
+dim(sigg)
+```
+
+
+```{r}
+'
+y = es$surv
+x = cs(as.matrix(E[match(rownames(sigg), rownames(E))[!is.na(match(rownames(sigg), rownames(E)))],!is.na(y)]), y[!is.na(y)])
+sigg$verset = x[rownames(sigg),"g"]
+'
+```
+
+```{r}
+#new prognostic
+```
+
+```{r}
+Hs.c2 = msigdb.genesets(sets = c("C2.CGP", "C2.CP"), type='entrez', species='human')
+Hs.c2 = Hs.c2$genesets
+```
+
+
+
+
+```{r}
+Y = res[match(unique(unlist(Hs.c2[grepl("VERHAAK_GLIOBLASTOMA", names(Hs.c2))])), res$entrez),"hgnc"]
+Y = Y[!is.na(Y)]
+Y = c("BMP2", "DLL3", "HDAC4", "EDNRB", "HEY2", "NTRK2", "CSDC2", "CALCRL", "CRTAC1", "MSTN", "ITPKB", "RGS4", "SYT1", "VSNL1", "SNCB", "PACSIN1", "SNCA", "SYT5", "MAL2", "MET", "TOP2A", "IGF2", "CDK1", "AURKB", "CDKN3", "MCM2", "BIRC5", "PTTG1", "CENPF", "COL6A3", "IGFBP4", "IGFBP6", "LOX", "LIF", "THBS1", "LAMB1", "S100A4", "DCN", "LGALS3", "VEGFA", "FN1", "MMP9", "MGP", "IGFBP2", Y)
+Y = dropNA(unique(Y))
+Y = unique(Y)
+#Y
+```
+
+
+
+```{r}
+x = Nexp
+colnames(x) = tolower(substr(colnames(x), 1, 12))
+x = flip(x)
+X = colnames(x)[match(rownames(sigg), colnames(x))[!is.na(match(rownames(sigg), colnames(x)))]]
+x = x[,unique(c(X, Y))]
+x = as.data.frame(x)
+x = cbind(x,cli[gsub("\\.","-",rownames(x)),c("IDH.status","neoplasm_histologic_grade","age_at_initial_pathologic_diagnosis","karnofsky_performance_score","X1p.19q.codeletion", "MGMT.promoter.status","histological_type", "location")])
+
+x$Astrocytic_histology = as.numeric(as.character(revalue(x$histological_type, c("glioblastoma"="3", "astrocytoma"="3", "oligoastrocytoma"="2", "oligodendroglioma"="1"))))
+x = x[,!colnames(x)=="histological_type"]
+x$Mutated_IDH = as.numeric(as.character(revalue(x$IDH.status, c("Mutant"="1", "WT"="0"))))
+x = x[,!colnames(x)=="IDH.status"]
+x$Codeletion_1p19q = as.numeric(as.character(revalue(x$X1p.19q.codeletion, c("codel"="1", "non-codel"="0"))))
+x = x[,!colnames(x)=="X1p.19q.codeletion"]
+x$Methylated_MGMT = as.numeric(as.character(revalue(x$MGMT.promoter.status, c("Methylated"="1", "Unmethylated"="0"))))
+x = x[,!colnames(x)=="MGMT.promoter.status"]
+x$neoplasm_histologic_grade = as.numeric(gsub("g", "", as.character(x$neoplasm_histologic_grade)))
+x$location = ifelse(x$location=="Temporal", 1,0)
+x=as.data.frame(as.matrix(scale(x)))
+x$surv = cli[gsub("\\.","-",rownames(x)),]$surv
+hseq = x
+```
+
+
+```{r}
+x = multivar(M = hseq,f = "surv ~ Mutated_IDH + neoplasm_histologic_grade + age_at_initial_pathologic_diagnosis + Codeletion_1p19q + Methylated_MGMT + Astrocytic_histology",e = X)
+```
+
+```{r}
+sigg$multiv =  x[rownames(sigg),"g"]
+```
+
+```{r}
+survmodel = function(df, f){
+  model = NULL
+  f[grepl("-", f)] = paste("`", f[grepl("-", f)], "`", sep="")
+  for(el in f){
+    s = summary(coxph(as.formula(paste("surv ~ ", (paste(c(model,el), sep = "", collapse= " + ")), sep="")),df))
+    if(s$coefficients[el,"Pr(>|z|)"]<0.05){
+      model = model[s$coefficients[model,"Pr(>|z|)"]<0.05]
+      model = c(model,el)
+    }
+  }
+  s = summary(coxph(as.formula(paste("surv ~ ", (paste(c(model), sep = "", collapse= " + ")), sep="")),df))
+  model = rownames(s$coefficients[s$coefficients[,"Pr(>|z|)"]<0.05,])
+  return(model)
+}
+```
+
+
+
+```{r}
+y=data.frame(feat = colnames(hseq), X=0, Y=0)
+rownames(y) = y$feat
+y[X,"X"]=1
+y[c(Y, "Mutated_IDH","neoplasm_histologic_grade","age_at_initial_pathologic_diagnosis","karnofsky_performance_score","Codeletion_1p19q", "Methylated_MGMT","Astrocytic_histology", "location"),"Y"] = 1
+y$col = 0
+y$col[y$X == 1] = "blue4"
+y$col[y$Y == 1] = "red4"
+y$col[(y$Y+y$X)==2] = "purple4"
+y
+```
+
+
+```{r}
+m1 = survmodel(hseq,c(Y, "Mutated_IDH","neoplasm_histologic_grade","age_at_initial_pathologic_diagnosis","karnofsky_performance_score","Codeletion_1p19q", "Methylated_MGMT","Astrocytic_histology", "location"))
+m1 = coxph(as.formula(paste("surv ~ `", (paste(m1, sep = "", collapse= "` + `")), "`", sep="")),hseq)
+m1
+AIC(m1)
+BIC(m1)
+```
+
+```{r}
+m2 = survmodel(hseq,X)
+m2 = coxph(as.formula(paste("surv ~ ", (paste(m2, sep = "", collapse= " + ")), sep="")),hseq)
+m2
+AIC(m2)
+BIC(m2)
+```
+
+
+
+```{r}
+mt = survmodel(hseq,colnames(hseq)[!colnames(hseq)=="surv"])
+mt = coxph(as.formula(paste("surv ~ ", (paste(mt, sep = "", collapse= " + ")), sep="")),hseq)
+mt
+AIC(mt)
+BIC(mt)
+```
+
+```{r}
+sis = summary(mt)
+sis = as.data.frame(cbind(sis$coefficients[,-2],sis$conf.int))
+sis$nn  = gsub("karnof","Karnof",gsub("neoplasm","Neoplasm",gsub("age at initial pathologic diagnosis","Age", gsub("_"," ", (gsub("`", "",rownames(sis)))))))
+sis$CI = log2(sis$`exp(coef)`)
+sis$lCI = log2(sis$`lower .95`)
+sis$uCI = log2(sis$`upper .95`)
+sis$labpos = -4
+sis$lab = paste("p = ", signif(sis$`Pr(>|z|)`,3), sep = "")
+sis$col = y$col[match(gsub("`", "", rownames(sis)), rownames(y))]
+
+sis$nn = with(sis, reorder(nn, CI))
+
+fp <- ggplot(data=sis, aes(x=nn, y=CI, ymin=lCI, ymax=uCI, colour = col)) +
+        geom_pointrange() +
+        geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+        geom_text(data=sis, aes(x = nn, y = labpos, label = lab, hjust=0, colour = "blue")) + 
+        expand_limits(x = c(-3, 4)) + 
+        scale_color_manual(values=c("forestgreen", as.character(unique(sis$col)))) +
+        coord_flip() +  # flip coordinates (puts labels on y axis)
+        labs(title=paste("Cox model, AIC = ", signif(AIC(mt),4), ", BCI = ", signif(BIC(mt),4)), x="Feature", y = "log2 HR (95% CI)") +
+        theme_bw() +  # use a white background
+        theme(legend.position="none")
+fp
+```
+
+
+
+
+
+```{r}
+fp = function(mt,fn,y){
+  sis = summary(mt)
+  sis = as.data.frame(cbind(sis$coefficients[,-2],sis$conf.int))
+  sis$nn  = gsub("karnof","Karnof",gsub("neoplasm","Neoplasm",gsub("age at initial pathologic diagnosis","Age", gsub("_"," ", (gsub("`", "",rownames(sis)))))))
+  sis$CI = log2(sis$`exp(coef)`)
+  sis$lCI = log2(sis$`lower .95`)
+  sis$uCI = log2(sis$`upper .95`)
+  sis$labpos = ifelse(sis$CI/abs(sis$CI)>0, min(sis$lCI), 3*max(sis$uCI)/4)
+  sis$lab = paste("p = ", signif(sis$`Pr(>|z|)`,3), sep = "")
+  sis$col = y$col[match(gsub("`", "", rownames(sis)), rownames(y))]
+  
+  sis$nn = with(sis, reorder(nn, CI))
+  
+  fp <- ggplot(data=sis, aes(x=nn, y=CI, ymin=lCI, ymax=uCI, colour = col)) +
+          geom_pointrange() +
+          geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+          geom_text(data=sis, aes(x = nn, y = labpos, label = lab, hjust=0, colour = "blue")) + 
+          #expand_limits(x = c(-1.5, 1)) + 
+          scale_color_manual(values=c("forestgreen", as.character(unique(sis$col)))) +
+          coord_flip() +  # flip coordinates (puts labels on y axis)
+          labs(title=paste("Cox model, AIC = ", signif(AIC(mt),4), ", BIC = ", signif(BIC(mt),4), ", Wald = ", signif(summary(mt)$waldtest["test"],4), " (p = ", signif(summary(mt)$waldtest["pvalue"],4), ")", sep = ""), x=NULL, y = "log2 HR (95% CI)") +
+          theme_bw() +  # use a white background
+          theme(legend.position="none")
+  
+  print(fp)
+  
+  
+  pdf(file=fn,width=8,height=(0.2*nrow(sis)+0.4))
+  print(fp)
+  dev.off()
+}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+fp(m1,"FigS1_external_survival_model.pdf",y)
+fp(m2,"Fig1D.pdf",y)
+fp(mt,"Fig1C.pdf",y)
+dev.off()
+```
+
+
+```{r}
+overlap = data.frame(feat = c("Age", "Grade", "Histology", "Prognostic", "TERT", "Cod1p19q", "verset", "IDH", "multiv", "Location", "Karnofsky", "MGMT"),
+                     name = c("age", "grade", "histology", "prognostic in TCGA", "TERT", "1p19q", "prognostic in GSE", "IDH", "multivariate prognostic", "Location", "Karnofsky", "MGMT"))
+rownames(overlap)=overlap$feat
+
+nn=NULL
+u=NULL
+d=NULL
+x=NULL
+for(el in overlap$feat){
+  counts=as.data.frame(xtabs(as.formula(paste("~ gr + `", el, "`", sep="")), data = sigg))
+  table = xtabs(as.formula(paste("Freq ~ gr + `", el, "`", sep="")), data=counts)
+  table = table[c("Upregulated", "Downregulated"),!colnames(table)=="NS"]
+  table = table[,order(table[2,],decreasing = F)]
+  nn = c(nn, paste(colnames(table)[1],overlap[el,"name"]))
+  fisher.test(table)
+  FT=fisher.test(table)
+  u = c(u, table["Upregulated",])
+  d = c(d, table["Downregulated",])
+  x = c(x, paste(el, colnames(table), sep = "_"))
+  overlap[el,"p.epi"]=FT$p.value
+  overlap[el,"OR.epi"]=FT$estimate
+  overlap[el,"lCI.epi"]=FT$conf.int[1]
+  overlap[el,"uCI.epi"]=FT$conf.int[2]
+}
+overlap$nn= gsub("codel", "Codeleted", nn)
+overlap$OR.epi = log2(overlap$OR.epi)
+overlap$lCI.epi = log2(overlap$lCI.epi)
+overlap$uCI.epi = log2(overlap$uCI.epi)
+overlap$padj.epi = p.adjust(overlap$p.epi, method = "BH")
+
+overlap$lab = paste("adj. p = ", signif(overlap$padj.epi, 3), sep = "")
+overlap$labpos=-2
+overlap$nn = with(overlap, reorder(nn, OR.epi))
+
+fp <- ggplot(data=overlap, aes(x=nn, y=OR.epi, ymin=lCI.epi, ymax=uCI.epi)) +
+        geom_pointrange() +
+        geom_hline(yintercept=0, lty=2) +  # add a dotted line at x=1 after flip
+        geom_text(data=overlap, aes(x = nn, y = labpos, label = lab, hjust=0, colour = "blue")) + 
+        scale_color_manual(values=c("blue")) +
+        coord_flip() +  # flip coordinates (puts labels on y axis)
+        labs(title="Overlap of associated genes", x=NULL, y = "Upregulated with seizures log2 OR (95% CI)\n") +
+        theme_bw() +  # use a white background
+        theme(legend.position="none")
+        
+print(fp)
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+#pdf(file="Fig1B1.pdf",width=8,height=6)
+print(fp)
+dev.off()
+
+
+X = rep("gray", times = length(x))
+names(X)=x
+y = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             Age = c("NS" = "gray", "Lower" = "white", "Higher" = "black"),
+             TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "Codel" = "brown", "Non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "Astrocytic" = "blue", "Oligodendroglial"  = "yellow"),
+             Grade = c("NS" = "gray", "Lower" = "forestgreen", "Higher" = "pink"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             Karnofsky = c("NS" = "gray", "Higher" = "darkslateblue", "Lower"="lawngreen"),
+             MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"))
+
+for(el in x){
+  Y = unlist(strsplit(el, "_"))
+  X[el] = y[[Y[1]]][Y[2]]
+}
+
+f = function(x){
+  return(x[1])
+}
+
+
+ 
+
+
+df <- data.frame(group = gsub("_", " ", gsub("multiv", "Multivariate prog. in TCGA", gsub("Prognostic", "Prog. in TCGA", gsub("verset", "Prog. in GSE", x)))),
+                 x = rep(1:length(x), 2),
+                 y = c(u, -d),
+                 gr = rep(c("u","d"), each=length(x)),
+                 col = X,
+                 or = overlap[sapply(strsplit(x, "_"),f),"OR.epi"])
+
+df = df[order(df$or, decreasing = T),]
+df$X = 2*(rep(1:(length(x)/2), each = 4))+mod(df$x+1,2)
+
+df$group = with(df, reorder(group, X))
+df$X = -df$X
+
+df$p = paste(signif(100*(abs(df$y)/(ifelse(df$gr=="u", sum(sigg$gr=="Upregulated"), sum(sigg$gr=="Downregulated")))), 3), "%")
+
+df$labpos = ifelse(df$gr=="u", 110, -230)
+
+
+p <- ggplot(df, aes(x=X, y=y, fill=group)) + 
+	    geom_bar(stat="identity", position="identity", colour = "gray") +
+      geom_hline(yintercept=c(-sum(sigg$gr=="Downregulated"), 0, sum(sigg$gr=="Upregulated")), lty=c(1,2,1)) +
+      scale_fill_manual(values=as.character(unique(df$col)))+
+      geom_text(data=df, aes(x = X, y = labpos, label = p, hjust=0)) +
+      coord_flip() +
+      labs(title="Number of associated genes", x="Feature", y = "Downregulated            Upregulated \n with seizures") +
+      expand_limits(y = c(-sum(sigg$gr=="Downregulated"), sum(sigg$gr=="Upregulated"))) +
+      theme_bw() +  # use a white background
+      theme(legend.position="right", axis.title.y=element_blank(), legend.title=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank())
+print(p)
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig1B.pdf",width=16,height=6)
+print(grid.arrange(fp,p, ncol=2))
+dev.off()
+
+```
+
+
+
+```{r}
+'
+f = function(d = c("euclidean", "maximum", "manhattan", "canberra", "binary", "minkowski"),
+             m=c("ward.D", "ward.D2", "single", "complete", "average", "mcquitty", "median", "centroid")){
+  d = rep(d, times = length(m))
+  M = NULL
+  for(el in m){
+    M = c(M, rep(el, times = length(d)/length(m)))
+  }
+  df = data.frame(d = d, m = M, p = 1, z=0)
+  for(el in 1:length(df$m)){
+    d = dist(flip(Xn), method = df[el, "d"])
+    h = hclust(d, method = df[el, "m"])
+    c = cutree(h, k=2)
+    c = data.frame(dend = c, epi = as.character(Xcli[names(c),]$seizure_history), sample = names(c))
+    counts=as.data.frame(xtabs(as.formula("~ dend + epi"), data = c))
+    table = xtabs(as.formula("Freq~ dend + epi"), data=counts)
+    table = table[,c("yes", "no")]
+    FT=fisher.test(table)
+    df[el,"p"] = FT$p.value
+    df[el,"z"] = abs(log(FT$estimate))
+  }
+  df = df[order(df$p),]
+  return(df)
+             }
+
+f()
+'
+```
+
+
+```{r}
+hseq = NULL
+hseq = as.data.frame(flip(Nexp))
+#,
+for(gene in c("SLC13A5", "SEZ6", "SPATA5", "GABBR2", "CRH", "SLC6A11", "NSMF", "SV2C", "GABRE", "CHRM2", "NCAN", "VSTM5", "VSTM2L", "REST", "MB", "NFE2L2", "CLEC4E", "GPR82", "POSTN")){
+  rest = ifelse(gene == "REST", F, ifelse(((cor.test(hseq[,gene], hseq[,"REST"])$p.value<1e-3) & (abs(cor(hseq[,gene], hseq[,"REST"]))>0.25)), T, F))
+  df = data.frame(sn = c("", "_Grade", "_Astrocytic_histology", "_Age", "_Temporal_location", "_surv", "_MutIDH", "_Cod1p19q", "_MetMGMT", "_ExprTERT", "_Karnofsky"),
+                  cn = c("seizure_history", "neoplasm_histologic_grade", "histological_type", "age_at_initial_pathologic_diagnosis", "location", "surv", "IDH.status", "X1p.19q.codeletion", "MGMT.promoter.status", "TERT.expression.status", "karnofsky_performance_score"),
+                  pn = c("Seizure history", "Grade", "Histology", "Age", "Location", "Survival", "IDH status", "1p19q", "MGMT promoter", "Tert", "KPS"))
+    
+  rownames(df) = df$pn
+
+  for(cn in df$cn){
+    hseq[,cn] = cli[tolower(substr(rownames(hseq),1,12)),cn]
+  }
+  
+  df = df[res[gene,paste("padj", df$sn, sep = "")]<0.1,]
+  
+  col = list(IDH.status = c("WT" = "cyan", "Mutant" = "darkgoldenrod"),
+               TERT.expression.status = c("Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+               seizure_history = c("yes" = "#008FFF", "no" = "#FF0007"),
+               X1p.19q.codeletion = c("codel" = "brown", "non-codel" = "cornflowerblue"),
+               histological_type = c("astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green", "glioblastoma" = "black"),
+               neoplasm_histologic_grade = c("g2" = "forestgreen", "g3" = "pink", "g4" = "black"),
+               location = c("Temporal" = "orange", "Other" = "lightblue"),
+               MGMT.promoter.status = c("Methylated" = "cyan4", "Unmethylated"="coral"))
+    
+  lp = list()
+  for(el in rownames(df)){
+    if(el == "Survival"){
+      hseq$Expression = "high"
+      m=maxstat.test(formula = as.formula(paste("surv ~ `", gene, "`", sep="")), data=hseq, smethod="LogRank", pmethod="Lau94", minprop = 0.2, maxprop=0.8)
+      hseq$Expression[hseq[, gene] <m$estimate] = "low"
+      my_grob = grobTree(textGrob(paste("PPp = ", as.character(signif(pchisq((survdiff(surv ~ Expression, data = hseq, rho = 1))$chisq, 1, lower.tail = F), digits = 3)),
+            "\nMHp = ", as.character(signif(pchisq((survdiff(surv ~ Expression, data = hseq, rho = 0))$chisq, 1, lower.tail = F), digits = 3)),
+            "\nCoxp = ", as.character(signif(res[gene, "pvalue_surv"], digits = 3)),
+            sep = ""),
+                                  x=0.5,y=0.9, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+      km <- survfit(surv ~ Expression, data = hseq, conf.type = "log")
+      p=ggsurvplot(km, conf.int = F, pval = F, surv.median.line = "hv", palette = c("red4", "cyan4"))
+      p=p$plot
+      p = p + theme_bw() + annotation_custom(my_grob) + labs(title="Prognostic value") + theme(legend.position = "top", legend.title=element_blank(), plot.title = element_text(hjust = 0.5))
+      lp[[el]] = p
+      
+    } else if((!(el=="KPS"))&(typeof(cli[,as.character(dropNA(df[el,"cn"]))]) == "integer")){
+      my_grob = grobTree(textGrob(paste("padj = ", signif(res[gene, paste("padj", as.character(dropNA(df[df$pn == el,"sn"])), sep = ""),],  digits = 3),  sep = ""), x=0.5,y=0.95, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+    
+      X = data.frame(hseq[!is.na(hseq[,as.character(dropNA(df[df$pn == el,"cn"]))]),c(gene, as.character(dropNA(df[df$pn == el,"cn"])))])
+      colnames(X) = c("y", "x")
+      p <- ggplot(X, aes(x=x, y=y, fill = x)) + 
+          theme_bw() +
+          geom_violin(trim=T) +
+          geom_boxplot(width=0.1, fill="white") +
+          #coord_cartesian(ylim = c(min(hseq[,gene]), max(hseq[,gene]))) +
+          scale_fill_manual(values=col[[as.character(dropNA(df[el,"cn"]))]])+
+          ylim(c(min(hseq[,gene]), 1.2*max(hseq[,gene]))) +
+          labs(title=ifelse(el == "Tert", toupper(as.character(df[el,"pn"])), as.character(df[el,"pn"])), y = paste(gene,  "norm. exp. lev."), x=NULL) +
+          theme(legend.position = "none", legend.title=element_blank(), plot.title = element_text(hjust = 0.5)) +
+          annotation_custom(my_grob)
+      lp[[el]] = p
+    } else if ((!(el=="KPS"))&(typeof(cli[,as.character(dropNA(df[el,"cn"]))]) == "double")){
+      X = as.data.frame(hseq[!is.na(hseq[,as.character(df[df$pn == el,"cn"])]),c(gene, as.character(df[df$pn == el,"cn"]), "seizure_history")])
+      colnames(X) = c("y", "x", "epi")
+      x = as.character(X$epi)
+      x[is.na(x)] = "NA"
+      
+      my_grob = grobTree(textGrob(paste("p = ", signif(cor.test(X$x, X$y)$p.value,  digits = 3),
+                                        "\ncoef = ", signif(cor(X$x, X$y),  digits = 3),  sep = ""), x=0.5,y=0.95, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+      
+      x = c("#008FFF", "#FF0007", "gray")
+      names(x) = c("yes", "no", "NA")
+      
+      p = ggplot(X, aes(x=x, y=y)) +
+        geom_point() +
+        theme_bw() +
+        labs(title=el, x=NULL,y = paste(gene,  "norm. exp. lev.")) +
+        ylim(c(min(hseq[,gene]), 1.2*max(hseq[,gene]))) +
+        scale_color_manual("black", values=c(x[as.character(unique(X$epi))])) +
+        geom_smooth(method="lm",formula=y~x, colour = "forestgreen") +
+        geom_point(aes(colour=epi)) +
+        theme(legend.position = "none", legend.title=element_blank(), plot.title = element_text(hjust = 0.5)) +
+        annotation_custom(my_grob)
+      lp[[el]] = p
+    }
+    if(rest){
+      X = as.data.frame(hseq[,c(gene, "REST", "seizure_history")])
+      colnames(X) = c("y", "x", "epi")
+      x = as.character(X$epi)
+      x[is.na(x)] = "NA"
+      
+      my_grob = grobTree(textGrob(paste("p = ", signif(cor.test(X$x, X$y)$p.value,  digits = 3),
+                                        "\ncoef = ", signif(cor(X$x, X$y),  digits = 3),  sep = ""), x=0.5,y=0.95, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+      
+      x = c("#008FFF", "#FF0007", "gray")
+      names(x) = c("yes", "no", "NA")
+      
+      p = ggplot(X, aes(x=x, y=y)) +
+        geom_point() +
+        theme_bw() +
+        ylim(c(min(hseq[,gene]), 1.3*max(hseq[,gene]))) +
+        labs(title="Correlation with REST", x="REST norm. exp. lev", y = paste(gene,  "norm. exp. lev.")) +
+        scale_color_manual(values=c(x[as.character(unique(X$epi))])) +
+        geom_smooth(method="lm",formula=y~x, colour = "forestgreen") +
+        geom_point(aes(colour=epi)) +
+        theme(legend.position = "none", legend.title=element_blank(), plot.title = element_text(hjust = 0.5)) +
+        annotation_custom(my_grob)
+      lp[["rest"]] = p
+      x = c(rownames(df), "rest")
+    } else {
+      x = rownames(df)
+    }
+    lp = lp[x]
+  }
+  lp = lp[!is.na(names(lp))]
+  if(length(lp)>5){
+    x = grid.arrange(cowplot::plot_grid(plotlist = lp[1:(floor(length(lp)/2))], nrow = 1),
+                     cowplot::plot_grid(plotlist = lp[(floor(length(lp)/2)+1):(length(lp))], nrow = 1),
+                     nrow = 2)
+    setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\panels")
+    pdf(file=paste("panel_", gene, ".pdf", sep = ""),width=2*length(lp),height=10)
+    plot(x)
+    dev.off()
+  } else {
+    x = cowplot::plot_grid(plotlist = lp, nrow = 1)
+    setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\panels")
+    pdf(file=paste("panel_", gene, ".pdf", sep = ""),width=4*length(lp),height=5)
+    plot(x)
+    dev.off()
+  }
+}
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# *** BOOKMARK ***
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+save.image("bookmark.RData")
+save.image("bookmarkDEG.RData")
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+rm(list = ls())
+load("bookmarkDEG.Rdata", verbose = F)
+library(BiocParallel)
+library(biomaRt)
+library(circlize)
+library(clValid)
+library(ComplexHeatmap)
+library(DESeq2)
+library(DGCA)
+library(fgsea)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(limma)
+library(maxstat)
+library(msigdb)
+library(plyr)
+library(PWMEnrich)
+library(PWMEnrich.Hsapiens.background)
+library(robustbase)
+library(RTN)
+library(RTNsurvival)
+library(survival)
+library(data.table)
+library(stats)
+library(survminer)
+library(TCGAutils)
+library(GSEAlm)
+library(mosaics)
+library(stats)
+setwd("D:/Files/Main_directory/Nencki/Epi/dt")
+#load("bookmark.Rdata")
+'l = ls()
+for(el in c("nexp", "cli", "trl", "dropNA", "flip", "res", "wilcoxon", "ensembl")){
+  l = l[!l==el]
+}
+rm(list = c(l, "l"))'
+```
+
+```{r}
+# *** TF ***
+```
+
+
+```{r}
+x = res[res$gr=="Upregulated",]$hgnc
+x = x[!is.na(x)]
+x = as.character(x)
+
+margin = 3000
+
+sequences = getSequence(id = x, 
+            type="hgnc_symbol",
+            seqType="cdna",
+            upstream = 0,
+            mart=ensembl)
+
+sequences = sequences[order(nchar(sequences$cdna), decreasing = T),]
+sequences = sequences[!duplicated(sequences$hgnc_symbol),]
+
+sequences2 = getSequence(id = x, 
+            type="hgnc_symbol",
+            seqType="cdna",
+            upstream = margin,
+            mart=ensembl)
+
+sequences2 = sequences2[order(nchar(sequences2$cdna), decreasing = T),]
+sequences2 = sequences2[!duplicated(sequences2$hgnc_symbol),]
+sequences2=sequences2[match(sequences$hgnc_symbol, sequences2$hgnc_symbol),]
+
+sequences3 = getSequence(id = x, 
+            type="hgnc_symbol",
+            seqType="cdna",
+            downstream = margin,
+            mart=ensembl)
+
+sequences3 = sequences3[order(nchar(sequences3$cdna), decreasing = T),]
+sequences3 = sequences3[!duplicated(sequences3$hgnc_symbol),]
+sequences3=sequences3[match(sequences$hgnc_symbol, sequences3$hgnc_symbol),]
+
+sequences$up=sequences2$cdna
+sequences$dn=sequences3$cdna
+sequences$n1 = nchar(sequences$cdna)
+sequences$n2 = nchar(sequences$up)
+sequences$n3 = nchar(sequences$dn)
+sequences$w = rep("", times = dim(sequences)[1])
+for (el in 1:(dim(sequences)[1])){
+  sequences$w[el]=substr(sequences$up[el], 1, sequences$n2-sequences$n1)
+}
+sequences$w=paste(sequences$w, sequences$dn, sep="")
+sequences$w = substr(sequences$w, 1, 2*margin)
+
+sequences=sequences[,c("w", "hgnc_symbol")]
+colnames(sequences) = c("cdna", "hgnc_symbol")
+
+for(el in 1:(dim(sequences)[1])){
+  if(sum(x==sequences$hgnc_symbol[el])==0){
+    sequences = sequences[!sequences$hgnc_symbol==sequences$hgnc_symbol[el]]
+  }
+}
+
+
+sequences = sequences[nchar(sequences$cdna)==6000,]
+
+#exportFASTA(sequences, "seqepipos.fasta")
+```
+
+
+
+
+
+
+```{r}
+
+#source("https://bioconductor.org/biocLite.R")
+#biocLite()
+#biocLite("PWMEnrich", lib="C://Program Files//R//R-3.4.3//library")
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+load("hocomocobg.Rdata")
+load("jasparbg.Rdata")
+```
+
+
+
+```{r}
+'
+#Downloaded from: http://jaspar.genereg.net/downloads/
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+motifs.jaspar = readMotifs("JASPAR2018_CORE_vertebrates_non-redundant_pfms_transfac.txt", remove.acc=TRUE)
+genomic.acgt = getBackgroundFrequencies("hg19")
+pwms.jaspar = toPWM(motifs.jaspar, prior=genomic.acgt)
+bg.jaspar = makeBackground(pwms.jaspar, organism="hg19", type="logn", quick=T)
+
+motifs.hocomoco = readMotifs("HOCOMOCOv11_core_HUMAN_mono_jaspar_format.txt", remove.acc=TRUE)
+#motifs.denovo  
+# convert count matrices into PWMs
+genomic.acgt = getBackgroundFrequencies("hg19")
+pwms.hocomoco = toPWM(motifs.hocomoco, prior=genomic.acgt)
+bg.hocomoco = makeBackground(pwms.hocomoco, organism="hg19", type="logn", quick=T)
+
+# use new motifs for motif enrichment
+#res.denovo = motifEnrichment(sequences[1:5], bg.denovo)
+#report = groupReport(res.denovo)
+#plot(report[report$p.value < 0.05], fontsize=12, id.fontsize=10)
+save(c("bg.jaspar", "bg.hocomoco"), file = "bg.Rdata")
+'
+```
+
+```{r}
+# use new motifs for motif enrichment
+x = sequences$cdna
+names(x)=sequences$hgnc_symbol
+x = DNAStringSet(x)
+
+res.denovo = motifEnrichment(x, bg.jaspar)
+res.denovo2 = motifEnrichment(x, bg.hocomoco)
+report = groupReport(res.denovo)
+report2 = groupReport(res.denovo2)
+
+f=function(x, n=16){
+  x = substr(x, 1, (nchar(x)-n))
+  return(x)
+}
+
+report2@d$target = unlist(lapply(report2$target, f))
+report2@d$id = unlist(lapply(report2$id, f))
+report2
+
+plot(report[order(report$p.value)[1:10]], fontsize=12, id.fontsize=10)
+plot(report2[order(report2$p.value)[1:10]], fontsize=12, id.fontsize=10)
+```
+
+```{r}
+#report[((order(report$raw.score, decreasing = T))[report$p.value<0.01])[1:4])]
+x=as.data.frame(report[p.adjust(report$p.value, method = "BH") <0.01])
+X=as.data.frame(report2[p.adjust(report2$p.value, method = "BH") <0.01])
+m=match(toupper(x$target), toupper(X$target))
+m = m[!is.na(m)]
+m=X[m,"id"]
+m
+tf.hi = m
+m = unique(c(m, report@d[report@d$rank<3.5,]$target,report2@d[report2@d$rank<3.5,]$target))
+```
+
+
+
+```{r}
+x = report[match(m, report$target)[!is.na(match(m, report$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+x
+```
+
+```{r}
+x = report2[match(m, report2$target)[!is.na(match(m, report2$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+x
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+x = report2[match(m, report2$target)[!is.na(match(m, report2$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+pdf(file="Fig3B_hocomoco.pdf",width=6,height=0.6+0.3*(length(x$target)))
+plot(x, fontsize=8, id.fontsize=10, widths = c(1, 1, 2, 1,1.5,1))
+dev.off()
+```
+
+
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+x = report[match(m, report$target)[!is.na(match(m, report$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+pdf(file="Fig3C_jaspar.pdf",width=6,height=0.6+0.3*(length(x$target)))
+plot(x, fontsize=8, id.fontsize=10, widths = c(1, 1, 2, 1,1.5,1))
+dev.off()
+```
+
+
+```{r}
+x = res[res$gr=="Downregulated",]$hgnc
+x = x[!is.na(x)]
+x = as.character(x)
+
+margin = 3000
+
+slo = getSequence(id = x, 
+            type="hgnc_symbol",
+            seqType="cdna",
+            upstream = 0,
+            mart=ensembl)
+
+slo = slo[order(nchar(slo$cdna), decreasing = T),]
+slo = slo[!duplicated(slo$hgnc_symbol),]
+
+slo2 = getSequence(id = x, 
+            type="hgnc_symbol",
+            seqType="cdna",
+            upstream = margin,
+            mart=ensembl)
+
+slo2 = slo2[order(nchar(slo2$cdna), decreasing = T),]
+slo2 = slo2[!duplicated(slo2$hgnc_symbol),]
+slo2=slo2[match(slo$hgnc_symbol, slo2$hgnc_symbol),]
+
+slo3 = getSequence(id = x, 
+            type="hgnc_symbol",
+            seqType="cdna",
+            downstream = margin,
+            mart=ensembl)
+
+slo3 = slo3[order(nchar(slo3$cdna), decreasing = T),]
+slo3 = slo3[!duplicated(slo3$hgnc_symbol),]
+slo3=slo3[match(slo$hgnc_symbol, slo3$hgnc_symbol),]
+
+slo$up=slo2$cdna
+slo$dn=slo3$cdna
+slo$n1 = nchar(slo$cdna)
+slo$n2 = nchar(slo$up)
+slo$n3 = nchar(slo$dn)
+slo$w = rep("", times = dim(slo)[1])
+for (el in 1:(dim(slo)[1])){
+  slo$w[el]=substr(slo$up[el], 1, slo$n2-slo$n1)
+}
+slo$w=paste(slo$w, slo$dn, sep="")
+slo$w = substr(slo$w, 1, 2*margin)
+
+slo=slo[,c("w", "hgnc_symbol")]
+colnames(slo) = c("cdna", "hgnc_symbol")
+
+for(el in 1:(dim(slo)[1])){
+  if(sum(x==slo$hgnc_symbol[el])==0){
+    slo = slo[!slo$hgnc_symbol==slo$hgnc_symbol[el]]
+  }
+}
+
+
+slo[!nchar(slo$cdna)==6000,]
+```
+
+```{r}
+# use new motifs for motif enrichment
+x = slo$cdna
+names(x)=slo$hgnc_symbol
+x = DNAStringSet(x)
+
+res.lo = motifEnrichment(x, bg.jaspar)
+res.lo2 = motifEnrichment(x, bg.hocomoco)
+
+reslo.denovo = motifEnrichment(x, bg.jaspar)
+reslo.denovo2 = motifEnrichment(x, bg.hocomoco)
+reportlo = groupReport(reslo.denovo)
+reportlo2 = groupReport(reslo.denovo2)
+
+f=function(x, n=16){
+  x = substr(x, 1, (nchar(x)-n))
+  return(x)
+}
+
+
+reportlo2@d$target = unlist(lapply(reportlo2$target, f))
+reportlo2@d$id = unlist(lapply(reportlo2$id, f))
+
+plot(reportlo[order(reportlo$p.value)[1:10]], fontsize=12, id.fontsize=10)
+plot(reportlo2[order(reportlo2$p.value)[1:10]], fontsize=12, id.fontsize=10)
+```
+
+```{r}
+#reportlo[((order(reportlo$raw.score, decreasing = T))[reportlo$p.value<0.01])[1:4])]
+x=as.data.frame(reportlo[p.adjust(reportlo$p.value, method = "BH") <0.01])
+X=as.data.frame(reportlo2[p.adjust(reportlo2$p.value, method = "BH") <0.01])
+m=match(toupper(x$target), toupper(X$target))
+m = m[!is.na(m)]
+m=X[m,"id"]
+m
+tf.lo = m
+m = unique(c(m, reportlo@d[reportlo@d$rank<3.5,]$target,reportlo2@d[reportlo2@d$rank<3.5,]$target))
+
+```
+
+
+
+```{r}
+x = reportlo[match(m, reportlo$target)[!is.na(match(m, reportlo$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+x
+```
+
+```{r}
+x = reportlo2[match(m, reportlo2$target)[!is.na(match(m, reportlo2$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+x
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+x = reportlo2[match(m, reportlo2$target)[!is.na(match(m, reportlo2$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+png(file="downregulated_hocomoco.png",width=150,height=70,res=400, units = "mm")
+plot(x, fontsize=8, id.fontsize=10)
+dev.off()
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+x = reportlo[match(m, reportlo$target)[!is.na(match(m, reportlo$target))]]
+x=x[order(x$raw.score, decreasing = T)]
+png(file="downregulated_jaspar.png",width=150,height=50,res=400, units = "mm")
+plot(x, fontsize=8, id.fontsize=10)
+dev.off()
+```
+
+```{r}
+Hs.c3 = msigdb.genesets(sets = "C3.TFT", type="entrez", species = "human")
+Hs.c3 = Hs.c3$genesets
+Hs.c3 = Hs.c3[!grepl("unknown", tolower(names(x)))]
+names(Hs.c3) = gsub("C3.TFT:", "", names(Hs.c3))
+names(Hs.c3) = gsub("C3.TFT:", "", names(Hs.c3))
+
+res2=res
+res2=res2[!is.na(res2$entrez),]
+res2=res2[order(abs(res2$log2FoldChange)),]
+res2=res2[!duplicated(res2$entrez),]
+Q=res2$log2FoldChange
+names(Q)=as.character(res2$entrez)
+Q = Q-median(Q)
+fgseaRes <- fgsea(pathways = Hs.c3, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000,
+                  nperm=100000)
+idx <- ids2indices(Hs.c3,id=names(Q))
+
+fgseaRes[fgseaRes$padj<0.05]
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig3A.pdf",width=8,height=4)
+for(GS in "NRSF_01"){
+barcodeplot(Q,
+            index=idx[[GS]],
+            main= paste("REST targets in Hs.c3\npadj = ", signif(as.numeric(fgseaRes[fgseaRes$pathway == GS,"padj"]),digits = 3), sep=""),
+            quantiles = c(Q[match(res[res$log2FoldChange==max(res[res$stat<0 & res$padj<0.1,]$log2FoldChange),"entrez"],names(Q))], Q[match(res[res$log2FoldChange==min(res[res$stat>0 & res$padj<0.1,]$log2FoldChange),"entrez"],names(Q))]),
+            xlab = "log2-fold change",
+            labels = c("No seizure history","Seizure history"),
+            alpha=1)  
+}
+dev.off()
+```
+
+```{r}
+tf=getBM(c("ensembl_gene_id","hgnc_symbol", "entrezgene"),filters="go",values="GO:0003700",mart=ensembl)
+
+tf_up = list(
+  jaspar = c("RARB", unlist(strsplit(toupper(report[p.adjust(report$p.value, method = "BH")<0.05,]$id),"::"))),
+  hocomoco =  report2[p.adjust(report2$p.value, method = "BH")<0.05,]$id,
+  deg = res[(!is.na(match(rownames(res), tf$hgnc_symbol)))&(res$padj<0.1)&(res$stat > 0),]$hgnc,
+  gsea = c("TAL1", "TCF4", "NR3C1", "MEF2A", "REST", "RFX1", "ESRRA", "TCF12", "SF1", "REPIN1", "TCF3", "PITX2")
+)
+
+tf_lo = list(
+  jaspar = c("JUND", unlist(strsplit(toupper(reportlo[p.adjust(reportlo$p.value, method = "BH")<0.05,]$id),"::"))),
+  hocomoco =  reportlo2[p.adjust(reportlo2$p.value, method = "BH")<0.05,]$id,
+  deg = res[(!is.na(match(rownames(res), tf$hgnc_symbol)))&(res$padj<0.1)&(res$stat < 0),]$hgnc,
+  gsea = c("PAX2", "IRF1")
+)
+
+x = table(unlist(tf_lo))
+x = x[order(x,decreasing = T)]
+x = x[x>1]
+X = x[!is.na(match(names(x), rownames(res)))]
+x = table(unlist(tf_up))
+x = x[order(x,decreasing = T)]
+x = x[x>1]
+x = x[!is.na(match(names(x), rownames(res)))]
+X = c(X,x)
+tf.res = names(X)
+```
+
+
+
+```{r}
+X = nexp[rownames(res),]
+colnames(X)=tolower(substr(colnames(X), 1,12))
+#X = X[!rowMedians(as.matrix(X))<10,]
+#X = filterGenes(X)
+
+dim(X)
+x1=trl[(match(rownames(X), trl$hgnc_symbol)),]
+rownames(x1)=rownames(X)
+x1=x1[,c("hgnc_symbol", "entrezgene", "hgnc_symbol")]
+colnames(x1)=c("PROBEID", "ENTREZ", "SYMBOL")
+X=X[!is.na(x1$PROBEID),]
+x1=x1[!is.na(x1$PROBEID),]
+
+
+
+x2=res$log2FoldChange
+names(x2)=rownames(res)
+
+
+x3=data.frame(row.names = names(x2), PROBEID = names(x2), SYMBOL = names(x2))
+
+f=function(x, n=16){
+  x = substr(x, 1, (nchar(x)-n))
+  return(x)
+}
+m=unlist(lapply(colnames(bg.hocomoco$bg.sd), f))
+
+x=match(rownames(res[!res$gr=="nc",]), tf$hgnc_symbol)
+x=x[!is.na(x)]
+m=c(m, as.character(tf[x,"hgnc_symbol"]))
+m=unique(c(m, toupper(unique(unlist(strsplit(colnames(bg.jaspar$bg.sd), "::"))))))
+
+x4=x1[m,]
+x4=x4[!is.na(x4$PROBEID),]
+x4=as.character(x4$PROBEID)
+names(x4)=x4
+
+x5=rownames(res[!res$gr=="nc",])
+
+epi4rtn=list(gexp=X, gexpIDs=x1, pheno=x2, phenoIDs=x3, hits=x5, tfs=x4)
+```
+
+
+```{r}
+
+tfs <- epi4rtn$tfs[unique(tf.res)]
+tfs = tfs[!is.na(tfs)]
+
+rtni <- tni.constructor(expData=epi4rtn$gexp, regulatoryElements=tfs, rowAnnotation=epi4rtn$gexpIDs)
+
+rtni <- tni.permutation(rtni, verbose = T, pValueCutoff=0.05, pAdjustMethod="BH", nPermutations = 10000)
+
+rtni <- tni.bootstrap(rtni)
+
+rtni <- tni.dpi.filter(rtni)
+
+```
+
+```{r}
+rtna <- tni2tna.preprocess(object=rtni, 
+                         phenotype=epi4rtn$pheno, 
+                         hits=epi4rtn$hits, 
+                         phenoIDs=epi4rtn$phenoIDs
+                         )
+rtna <- tna.mra(rtna)
+rtna <- tna.overlap(rtna)
+
+#rtna <- tna.gsea1(rtna, stepFilter=FALSE, nPermutations=100)
+#tna.plot.gsea1(rtna, file="tna_gsea1", labPheno="abs(log2) diff. expression")
+
+
+
+
+rtna <- tna.gsea2(rtna, tfs = unique(tf.res), nPermutations=1000)
+#rtna <- tna.gsea2(rtna, tfs = "REST", nPermutations=1000)
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\rtn")
+
+for(el in tfs){
+  
+
+pdf(file=paste("tna_gsea2_", el, ".pdf", sep=""), width = 8, height = 5)
+x = tna.plot.gsea2(rtna, file="tna_gsea2", labPheno="log2 diff. expression", alpha = 0.5, height = 5, width = 8, plotpdf = F, tfs = el, ylabPanels = c("Seizure history", "RTN regulon", "Enrichment score"))
+dev.off()
+
+}
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\rtn")
+X=cli[tolower(substr(colnames(rtni@gexp),1,12)),]
+rownames(X)=colnames(rtni@gexp)
+X=X[,c("SO", "vital_status", "age_at_initial_pathologic_diagnosis", "neoplasm_histologic_grade", "histological_type", "seizure_history", "IDH.status", "X1p.19q.codeletion")]
+X$SO[X$SO<0]=0
+X$vital_status=as.numeric(X$vital_status=="dead")
+colnames(X)=c("time", "event", "Age", "Grade", "histology", "GAE", "IDHmut", "Codel1p19q")
+X$Grade=as.numeric(X$Grade=="g3")+2
+X$G2=0
+X$G2[X$Grade==2]=1
+X$G3=0
+X$G3[X$Grade==3]=1
+X$Histology=1
+X$Histology[X$histology=="oligoastrocytoma"]=2
+X$Histology[X$histology=="astrocytoma"]=3
+X$OD=0
+X$OD[X$Histology==1]=1
+X$OA=0
+X$OA[X$Histology==2]=1
+X$AS=0
+X$AS[X$Histology==3]=1
+X=X[,!colnames(X)=="histology"]
+X$GAE=as.numeric(X$GAE=="yes")
+X$IDHmut=as.numeric(X$IDHmut=="Mutant")
+X$Codel1p19q=as.numeric(X$Codel1p19q=="codel")
+
+library(RTNsurvival)
+
+rtns <- tni2tnsPreprocess(rtni, X, keycovar = c("Grade","Age","Histology"), time = 1, event = 2)
+
+rtns <- tnsGSEA2(rtns, verbose = FALSE)
+
+rtns <- tnsCox(rtns)
+
+rtns <- tnsKM(rtns)
+
+
+
+```
+
+```{r}
+rtns <- tnsKM(rtns, nSections = 2)
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\rtn")
+
+for(el in tfs){
+  pdf(file=paste("reg_surv_", el, ".pdf", sep=""), width = 8, height = 6)
+  tnsPlotKM(rtns, regs=el, attribs = list(c("G2","G3"),c("OD","AS"),c("IDHmut","Codel1p19q"))
+            #colorPalette = c("#008FFF", "gray", "#FF0007"),
+            )
+  dev.off()
+
+}
+```
+
+
+
+```{r}
+# *** BOOKMARK ***
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+#save.image("bookmark.RData")
+save.image("bookmarkTF.RData")
+```
+
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+rm(list = ls())
+load("bookmarkTF.Rdata", verbose = F)
+library(BiocParallel)
+library(biomaRt)
+library(circlize)
+library(clValid)
+library(ComplexHeatmap)
+library(DESeq2)
+library(DGCA)
+library(fgsea)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(limma)
+library(maxstat)
+library(msigdb)
+library(plyr)
+library(PWMEnrich)
+library(PWMEnrich.Hsapiens.background)
+library(robustbase)
+library(RTN)
+library(RTNsurvival)
+library(survival)
+library(data.table)
+library(stats)
+library(survminer)
+library(TCGAutils)
+library(GSEAlm)
+library(mosaics)
+library(stats)
+```
+
+```{r}
+# *** GSEA ***
+```
+
+```{r}
+library(data.table)
+eliminatePathways <- function(universe, pathways, pathway2name, isNonRandomPval, pvalThreshold=1e-3) {
+    messagef <- function(...) message(sprintf(...))
+    pathways <- lapply(pathways, intersect, universe)
+    mainPathways <- c()
+    
+    res <- list()
+    
+    pp <- names(pathway2name)[3] # for debug
+    
+    for (pp in names(pathway2name)) {
+        messagef("Testing pathway '%s'", pathway2name[pp])
+        
+        if (length(mainPathways) == 0) {
+            # nothing to compare with
+            mainPathways <- pp
+            next
+        }    
+        
+        interesting <- TRUE
+        pp1 <- mainPathways[1] # for debug
+        # We want our new pathway to give us additional information compared to all others that we have already
+        for (pp1 in mainPathways) {
+            notExplainsPval <- min(isNonRandomPval(universe = pathways[[pp1]], 
+                                                   p = pathways[[pp]]),
+                                   isNonRandomPval(universe = setdiff(universe, pathways[[pp1]]), 
+                                                   p= pathways[[pp]]))
+            res <- c(res, list(data.frame(
+                checking=pp,
+                reference=pp1,
+                pval=notExplainsPval)))
+            
+            if (notExplainsPval > pvalThreshold) {
+                
+                messagef("Not adding pathway '%s', because we already have '%s'", 
+                         pathway2name[pp],
+                         pathway2name[pp1])
+                
+                eqPval <- min(
+                    isNonRandomPval(universe = setdiff(universe, pathways[[pp]]), 
+                                    pathways[[pp1]]),
+                    isNonRandomPval(universe = pathways[[pp]], 
+                                    pathways[[pp1]]))
+                
+                res <- c(res, list(data.frame(
+                    checking=pp1,
+                    reference=pp,
+                    pval=eqPval)))
+                
+                if (eqPval <= pvalThreshold) {
+                    messagef("And they are not equivalent: %s", eqPval)
+                } else {
+                    messagef("They are equivalent: %s", eqPval)
+                }
+                interesting = FALSE
+                break
+            }
+        }    
+        
+        if (interesting) {
+            messagef("Adding pathway '%s', because we can", 
+                     pathway2name[pp])
+            mainPathways <- c(mainPathways, pp)
+            
+            # OK it gives use new info, may be now we don't need some of already added pathways?
+            
+            # Now roles have changed, we test every interesting pathways agains out newly added one
+            for (pp1 in setdiff(mainPathways, pp)) {
+                notExplainsPval <- min(
+                    isNonRandomPval(universe = setdiff(universe, pathways[[pp]]), 
+                                    pathways[[pp1]]),
+                    isNonRandomPval(universe = pathways[[pp]], 
+                                    pathways[[pp1]]))
+                res <- c(res, list(data.frame(
+                    checking=pp1,
+                    reference=pp,
+                    pval=notExplainsPval)))
+                if (notExplainsPval > pvalThreshold) {
+                    messagef("Removing pathway %s, because we now have %s", 
+                             pathway2name[pp1],
+                             pathway2name[pp])
+                    mainPathways <- setdiff(mainPathways, pp1)
+                }
+            }
+        }
+    }
+    
+    list(mainPathways=mainPathways,
+         table=rbindlist(res))
+}
+
+fgseaIsNonRandomPval <- function(pathways, ranks, nperm) {
+    isNonRandomPval <- function(universe, p) {
+        pathway <- intersect(p, universe)
+        if (length(pathway) == 0 || length(pathway) == length(universe)) {
+            return(1)
+        }
+        fgsea(pathways = list(pathway),
+              stats=ranks[names(ranks) %in% universe], 
+              nperm = nperm)$pval
+    }
+}
+
+
+
+```
+
+```{r}
+performGSEA = function(res = res, gsts, nperm=100000, type = "entrez", goover = NULL, include = NULL, name = "pathways"){
+  if(type == "entrez"){
+    res2=res
+    res2=res2[!is.na(res2$entrez),]
+    res2=res2[order(abs(res2$log2FoldChange)),]
+    res2=res2[!duplicated(res2$entrez),]
+    Q=res2$log2FoldChange
+    names(Q)=as.character(res2$entrez)
+    Q = Q-median(Q)
+  } else {
+    res2=res
+    res2=res2[!is.na(res2$hgnc),]
+    res2=res2[order(abs(res2$log2FoldChange)),]
+    res2=res2[!duplicated(res2$hgnc),]
+    Q=res2$log2FoldChange
+    names(Q)=as.character(res2$hgnc)
+    Q = Q-median(Q)
+  }
+  fgseaRes <- fgsea(pathways = gsts, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=1000,
+                  nperm=nperm)
+  # checking pathways in the order of decreasing significance
+  pathway2name <- fgseaRes[((padj<1e-2)&((NES>fgseaRes$NES[order(fgseaRes$NES,decreasing=T)][30])|(NES<fgseaRes$NES[order(fgseaRes$NES,decreasing=F)][30])))]
+  x = gsts
+  for(el in goover){
+    pathway2name <- pathway2name[(!pathway==el)]
+    x = x[!names(x)==el]
+  }
+  
+  pathway2name <- pathway2name[order(pval), setNames(pathway, pathway)]
+  
+  
+  
+  for(el in goover)
+  # this process is slow, takes ~5 minutes
+  date()
+  elimRes <- eliminatePathways(universe=names(Q),
+                               pathways=x,
+                               pathway2name=pathway2name,
+                               isNonRandomPval=fgseaIsNonRandomPval(x, Q, nperm=(nperm/2)))
+  date()
+  
+  elimRes$mainPathways
+  
+  reactome = as.data.frame(fgseaRes)
+  rownames(reactome) = reactome$pathway
+  reactome = reactome[reactome$padj<0.05,]
+  x = reactome[unique(c(goover, include, elimRes$mainPathways)),]
+  x=x[order(x$NES,decreasing = T),]
+  x=as.character(x$pathway)
+  reactome$sel = 0
+  reactome[x,"sel"] = 1
+  reactome = reactome[order(abs(reactome$NES),decreasing = T),]
+  
+  setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea")
+  
+  write.csv(as.matrix(reactome[reactome$padj<0.05,!(colnames(reactome)=="leadingEdge")]), file=paste(name, "significant_genesets.csv", sep = "_"))
+  pdf(file=paste(name, "GSEA.pdf", sep = "_"), width=5*(5+max(nchar(x))/8)/(max(nchar(x))/8),height=0.5*(2+length(x)))
+  plotGseaTable(gsts[x], Q, fgseaRes, gseaParam = 0.6, colwidths = c(max(nchar(x))/8, 1.25, 1, 1.2, 1.2))
+  dev.off()
+  return(reactome)
+}
+```
+
+```{r}
+Hs.c2 = msigdb.genesets(sets = "C2.CP", type="entrez", species = "human")
+Hs.c2 = Hs.c2$genesets
+names(Hs.c2) = gsub("C2.CP:", "", names(Hs.c2))
+names(Hs.c2) = gsub("C2.CP:", "", names(Hs.c2))
+names(Hs.c2) = gsub("_", " ", names(Hs.c2))
+Reactome = Hs.c2[grepl("REACTOME", names(Hs.c2))]
+names(Reactome) = gsub("REACTOME ", "", names(Reactome))
+reactome = performGSEA(res = res, gsts = Reactome, nperm = 100000, type = "entrez", goover = c("NEURONAL SYSTEM"), name = "reactome")
+```
+
+```{r}
+f = function(x){
+  if(nchar(x)<30){
+    return (x)
+  } else {
+    y = as.character(gregexpr(pattern =' ',x))
+    y = as.numeric(unlist(strsplit(gsub("\\)", "", gsub("c\\(", "",y)), ", ")))
+    x = paste(sep = "\n", substr(x, 1, y[round(0.1+length(y)/2)]-1),substr(x, y[round(0.1 + length(y)/2)]+1, nchar(x)))
+    return (x)
+  }
+}
+
+Hs.c5 = msigdb.genesets(sets = c("C5.BP", "C5.CC", "C5.MF"), type="entrez", species = "human")
+Hs.c5 = Hs.c5$genesets
+names(Hs.c5) = gsub("C5.BP:", "", names(Hs.c5))
+names(Hs.c5) = gsub("C5.CC:", "", names(Hs.c5))
+names(Hs.c5) = gsub("C5.MF:", "", names(Hs.c5))
+names(Hs.c5) = gsub("_", " ", names(Hs.c5))
+names(Hs.c5)=gsub("GO ", "", names(Hs.c5))
+
+x = names(Hs.c5)
+x[x=="ADAPTIVE IMMUNE RESPONSE BASED ON SOMATIC RECOMBINATION OF IMMUNE RECEPTORS BUILT FROM IMMUNOGLOBULIN SUPERFAMILY DOMAINS"]="ADAPTIVE IMMUNE RESPONSE BASED RECOMBINATION OF IG SUPERFAMILY DOMAINS"
+names(Hs.c5)=x
+names(Hs.c5)=sapply(as.character(names(Hs.c5)), f)
+
+go = performGSEA(res = res, gsts = Hs.c5, nperm = 100000, type = "entrez", name = "go")
+```
+
+
+
+```{r}
+Hs.c2 = msigdb.genesets(sets = "C2.CGP", type="entrez", species = "human")
+Hs.c2 = Hs.c2$genesets
+names(Hs.c2) = gsub("C2.CGP:", "", names(Hs.c2))
+
+res2=res
+res2=res2[!is.na(res2$entrez),]
+res2=res2[order(abs(res2$log2FoldChange)),]
+res2=res2[!duplicated(res2$entrez),]
+Q=res2$log2FoldChange
+names(Q)=as.character(res2$entrez)
+Q = Q-median(Q)
+fgseaRes <- fgsea(pathways = Hs.c2, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000,
+                  nperm=100000)
+idx <- ids2indices(Hs.c2,id=names(Q))
+
+fgseaRes[fgseaRes$padj<0.05]
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig2B.pdf",width=8,height=6)
+barcodeplot(Q,
+            index=idx[["VERHAAK_GLIOBLASTOMA_NEURAL"]],
+            index2=idx[["VERHAAK_GLIOBLASTOMA_MESENCHYMAL"]],
+            main= paste(sep = "", "Verhaak glioblastoma signatures in Hs.c2:\nNeural padj = ",
+                        signif(as.numeric(fgseaRes[fgseaRes$pathway == "VERHAAK_GLIOBLASTOMA_NEURAL","padj"]),digits = 3),
+                        "\nMesenchymal padj = ",
+                        signif(as.numeric(fgseaRes[fgseaRes$pathway == "VERHAAK_GLIOBLASTOMA_MESENCHYMAL","padj"]),digits = 3)),
+            quantiles = c(Q[match(res[res$log2FoldChange==max(res[res$stat<0 & res$padj<0.1,]$log2FoldChange),"entrez"],names(Q))], Q[match(res[res$log2FoldChange==min(res[res$stat>0 & res$padj<0.1,]$log2FoldChange),"entrez"],names(Q))]),
+            xlab = "log2-fold change",
+            labels = c("No seizure history","Seizure history"),
+            alpha=1)
+dev.off()
+
+'names(Hs.c2) = gsub("_", " ", names(Hs.c2))
+hs.c2 = performGSEA(res = res, gsts = Hs.c2, nperm = 100000, type = "entrez",name = "hs.c2", include = c("VERHAAK GLIOBLASTOMA NEURAL", "VERHAAK GLIOBLASTOMA MESENCHYMAL"))'
+```
+
+```{r}
+Hs.H = msigdb.genesets(sets = "CH.HALLMARK", type="entrez", species = "human")
+Hs.H = Hs.H$genesets
+names(Hs.H) = gsub("CH.HALLMARK:", "", names(Hs.H))
+names(Hs.H) = gsub("_", " ", names(Hs.H))
+hallmark = performGSEA(res = res, gsts = Hs.H, nperm = 100000, type = "entrez",name = "hallmark")
+```
+
+```{r}
+Hs.c3 = msigdb.genesets(sets = "C3.TFT", type="entrez", species = "human")
+Hs.c3 = Hs.c3$genesets
+Hs.c3 = Hs.c3[!grepl("unknown", tolower(names(Hs.c3)))]
+names(Hs.c3) = gsub("C3.TFT:", "", names(Hs.c3))
+hs.c3 = performGSEA(res = res, gsts = Hs.c3, nperm = 100000, type = "entrez",name = "hs.c3")
+```
+
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+x = read.table("hgnc_families.txt", sep = "\t", header = T)
+
+f = function(gs, ge){
+  gs = as.character(gs)
+  ge = as.character(ge)
+  l = list()
+  for(el in unique(gs)){
+    l[[el]] = ge[gs==el]
+  }
+  return(l)
+}
+hgnc = f(x$Family.name, x$Approved.symbol)
+
+HGNC = performGSEA(res = res, gsts = hgnc, nperm = 100000, type = "symbol",name = "HGNC")
+```
+
+```{r}
+# *** drugs ***
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+Rep = read.csv("repurposing_drugs_20180907.csv", header = T)
+
+rep = strsplit(as.character(Rep$target), "\\|")
+names(rep)=Rep$pert_iname
+#rep = rep[grepl("epilep", Rep$indication)|grepl("seiz", Rep$indication)]
+rep = rep[sapply(rep,length)>0]
+
+'f = function(x,y){
+  return(length(intersect(x,y)))
+}
+x = sapply(rep, f, y=rownames(res[res$gr=="Upregulated",])) #- sapply(rep, f, y=rownames(res[res$gr=="Downregulated",]))
+f = function(x,y){
+  return(intersect(x,y))
+}
+X = sapply(rep, f, y=rownames(res[res$gr=="Upregulated",]))
+
+table(unlist(X[x>0]))'
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+aed = read.csv("AED.csv", header = T)
+#aed = aed[aed$AED==1,]
+x = rep[match(tolower(aed$Pharmaceutical), tolower(names(rep)))]
+x = x[!is.na(names(x))]
+
+res2=res
+res2=res2[!is.na(res2$hgnc),]
+res2=res2[order(abs(res2$log2FoldChange)),]
+res2=res2[!duplicated(res2$hgnc),]
+Q=res2$log2FoldChange
+names(Q)=as.character(res2$hgnc)
+Q = Q-median(Q)
+
+fgseaRes <- fgsea(pathways = x, 
+                  stats = Q,
+                  minSize=1,
+                  maxSize=1000,
+                  nperm=100000)
+idx <- ids2indices(x,id=names(Q))
+REP = as.data.frame(fgseaRes)
+REP[order(REP$pval),]
+
+
+
+REP=REP[order(REP$pval),]
+REP$sel = 0
+REP$sel[REP$padj<0.05] = 1
+REP$family = aed[match(tolower(REP$pathway), tolower(aed$Pharmaceutical)),]$Family
+REP$aed = aed[match(tolower(REP$pathway), tolower(aed$Pharmaceutical)),]$AED
+REP$sel[duplicated(rep[REP$pathway])] = 0
+REP$sel[(!duplicated(REP$family))] = 1
+REP$sel[(REP$aed==0)&(REP$padj>0.05)] = 0
+REP[REP$sel==1,]
+
+REP = REP[order(REP$NES,decreasing = T),]
+x = as.character(REP[REP$sel==1,]$pathway)
+
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+write.csv(as.matrix(REP[,!(colnames(REP)=="leadingEdge")]), file="REP.csv")
+pdf(file="REP.pdf",width=7.4,height=0.3*(2+length(x)))
+plotGseaTable(rep[x], Q, fgseaRes, gseaParam = 0.6, colwidths = c(2, 2, 1, 1.2, 1.2))
+dev.off()
+
+REP$sel[(REP$aed==0)&(!(REP$pathway == "acamprosate"))] = 0
+x = as.character(REP[REP$sel==1,]$pathway)
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig2C.pdf",width=7.4,height=0.3*(2+length(x)))
+plotGseaTable(rep[x], Q, fgseaRes, gseaParam = 0.6, colwidths = c(2, 2, 1, 1.2, 1.2))
+dev.off()
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+dsigdb = read.gmt("DSigDBD1.gmt")
+dsigdb = append(dsigdb$genesets, read.gmt("DSigDBD2.gmt")$genesets)
+
+f = function(x,y){
+  return(length(intersect(x,y)))
+}
+x = sapply(dsigdb, f, y=rownames(res[res$gr=="Downregulated",])) #- sapply(dsigdb, f, y=rownames(res[res$gr=="Downregulated",]))
+f = function(x,y){
+  return(intersect(x,y))
+}
+X = sapply(dsigdb, f, y=rownames(res[res$gr=="Downregulated",]))
+
+table(unlist(X[x>0]))
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+aed = read.csv("AED.csv", header = T)
+names(dsigdb) = tolower(names(dsigdb))
+x = dsigdb[match(tolower(aed$Pharmaceutical), tolower(names(dsigdb)))]
+aed$Pharmaceutical[is.na(names(x))]
+x = x[!is.na(names(x))]
+
+fgseaRes <- fgsea(pathways = x, 
+                  stats = Q,
+                  minSize=1,
+                  maxSize=1000,
+                  nperm=100000)
+idx <- ids2indices(x,id=names(Q))
+Dsigdb = as.data.frame(fgseaRes)
+
+Dsigdb=Dsigdb[order(Dsigdb$pval),]
+Dsigdb$sel = 0
+Dsigdb$sel[Dsigdb$padj<0.05] = 1
+Dsigdb$family = aed[match(tolower(Dsigdb$pathway), tolower(aed$Pharmaceutical)),]$Family
+Dsigdb$aed = aed[match(tolower(Dsigdb$pathway), tolower(aed$Pharmaceutical)),]$AED
+Dsigdb$sel[duplicated(dsigdb[Dsigdb$pathway])] = 0
+Dsigdb$sel[(!duplicated(Dsigdb$family))] = 1
+Dsigdb$sel[(Dsigdb$aed==0)&(Dsigdb$padj>0.05)] = 0
+Dsigdb[Dsigdb$sel==1,]
+
+Dsigdb = Dsigdb[order(Dsigdb$NES,decreasing = T),]
+x = as.character(Dsigdb[Dsigdb$sel==1,]$pathway)
+
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+write.csv(as.matrix(Dsigdb[,!(colnames(Dsigdb)=="leadingEdge")]), file="Dsigdb.csv")
+
+pdf(file="Dsigdb.pdf",width=7.4,height=0.3*(2+length(x)))
+plotGseaTable(dsigdb[x], Q, fgseaRes, gseaParam = 0.6, colwidths = c(2, 2, 1, 1.2, 1.2))
+
+dev.off()
+```
+
+```{r}
+X = ds_epi$VST
+
+f=function(x){
+  x = 2^x
+  return(x)
+}
+x = colnames(X)
+X = flip(apply(X,1,f))
+colnames(X) = rev(x)
+
+
+x = rep[REP[REP$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X = X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+epi <- as.character(cli[tolower(substr(colnames(X),1,12)),"seizure_history"])
+pheno <- new("AnnotatedDataFrame", data = data.frame(epi), varMetadata = data.frame(labelDescription="epi"))
+rownames(pheno@data) <- colnames(X)
+eset <- new("ExpressionSet", exprs = X, phenoData = pheno)
+
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+
+At = gsealmPerm(eSet = eset, formula = ~ epi, mat = a,nperm = 1000, detailed = T)
+At$pvalues
+
+A = GSNormalize(dataset = X, incidence = a)
+
+f=function(x){
+  x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x)
+  x=x/sd(x)
+  return(x)
+}
+x = colnames(A)
+A = flip(apply(A,1,f))
+colnames(A) = rev(x)
+
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","TERT.expression.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "TERT", "Cod1p19q", "Location", "Grade", "Histology")
+#x
+
+A = A[, order(colMeans(A[c("zonisamide","acetazolamide"),]) - colMeans(A[!((rownames(A)=="zonisamide")|(rownames(A)=="acetazolamide")),]))]
+
+
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+pdf(file="REP_heatmap.pdf",width=16,height=(1+length(x)))
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("neoplasm_histologic_grade","histological_type","location","age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status")]
+  
+  colnames(x) = c("Grade", "Histology", "Location", "Age", "IDH", "Cod1p19q", "TERT", "Karnofsky", "MGMT")
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(A)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(A)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(A)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(A)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"))
+  
+  ha <- HeatmapAnnotation(x,col=col, annotation_legend_param = list(title_gp = gpar(fontsize = 14),labels_gp = gpar(fontsize = 12)))
+  
+  Heatmap(M,
+          top_annotation = ha,
+          column_title = cn,
+          cluster_rows = F,
+          cluster_columns = F,
+          #row_order = 1:length(colnames(M)),
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = tolower(lg)=="yes",
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Signature expression",
+          column_title_gp = gpar(fontsize = 14),
+          #row_title_gp = gpar(fontsize = 16),
+          row_names_gp = gpar(fontsize = 14),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 14),labels_gp = gpar(fontsize = 12), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          #clustering_distance_columns = "canberra",
+          #clustering_method_columns = "average",
+          #split = ifelse(reactome[match(rownames(M),rownames(reactome)),]$NES>0, "Upregulated", "Downregulated"),
+          col = colorRamp2((c(min(as.matrix(A)), median(as.matrix(A)) - 2*sd(as.matrix(A)),median(as.matrix(A)) - 1*sd(as.matrix(A)), median(as.matrix(A)), median(as.matrix(A)) + 1*sd(as.matrix(A)),  median(as.matrix(A)) + 2*sd(as.matrix(A)), max(as.matrix(A))))[order(c(min(as.matrix(A)), median(as.matrix(A)) - 2*sd(as.matrix(A)),median(as.matrix(A)) - 1*sd(as.matrix(A)), median(as.matrix(A)), median(as.matrix(A)) + 1*sd(as.matrix(A)),  median(as.matrix(A)) + 2*sd(as.matrix(A)), max(as.matrix(A))))],
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+ht1 = Ht(M=A[,cli[substr(tolower(colnames(A)),1,12),]$seizure_history=="no"], lg="no", cn = "No seizure history")
+ht2 = Ht(M=A[,cli[substr(tolower(colnames(A)),1,12),]$seizure_history=="yes"], lg="yes", cn = "Seizure history")
+draw(ht1+ht2, heatmap_legend_side = "bottom") #
+dev.off()
+
+A = as.data.frame(flip(A))
+
+
+
+A = A[,rev(hclust(dist(flip(A)))$order)]
+
+
+cm = cor(as.matrix(A))
+cm[diag(T,dim(cm))]=0
+
+
+act = function(A, cm){
+  a = rev(rownames(cm))
+  b = rev(colnames(cm))
+  cort = matrix(-3,ncol = ncol(cm), nrow = nrow(cm))
+  colnames(cort) = colnames(cm)
+  rownames(cort) = rownames(cm)
+  for (el in a) {
+    b = b[!b==el]
+    for(EL in b){
+      cm[el,EL] = 0
+      cort[el,EL] = ifelse(cor.test(A[,el], A[,EL])$p.value==0, 0, -log(cor.test(A[,el], A[,EL])$p.value))
+    }
+  }
+  cort[cort==0]=1.4*max(cort)
+  cort[cort<0] = 0
+  cort = cort*(-1) - 4
+  cort[cort==-4] = 0
+  cm = cm + cort
+  return(cm)
+}
+
+cm = act(A, cm)
+
+anno = data.frame(Cor = rep(0, times = dim(cm)[1]), `p` = rep(1, times = dim(cm)[1]), row.names = rownames(cm))
+
+col = list(Cor = colorRamp2(c((-1), (-0.95), (-0.5),0,0.5,0.95,1),
+                            c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")),
+           `p` = colorRamp2(c(2^(min(cm)+4), 2^(median(cm[cm<(-3.9)])+4), 0.05, 1),
+                                  c("darkgreen", "forestgreen", "yellowgreen", "white")))
+ha <- HeatmapAnnotation(anno,col=col)
+
+x = as.character(colnames(A))
+ht = Heatmap(cm[x,x],
+              top_annotation = ha,
+              cluster_columns = F,
+              cluster_rows = F,
+              name = "Cor",
+              col = colorRamp2(c(min(cm), median(cm[cm<(-3.9)]), log(0.05)-4, -4,(-1), (-0.95), (-0.5), 0,0.5,0.95,1),
+                                   c("darkgreen", "forestgreen", "yellowgreen", "white","darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+pdf(file="REP_Cor.pdf",width=8,height=6)
+draw(ht, show_heatmap_legend = F)
+dev.off()
+
+X = ds_epi$VST
+
+f=function(x){
+  x = 2^x
+  return(x)
+}
+x = colnames(X)
+X = flip(apply(X,1,f))
+colnames(X) = rev(x)
+X = X[,cli[tolower(substr(colnames(X),1,12)),"seizure_history"]=="yes"]
+
+
+x = rep[REP[REP$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X = X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],cli[tolower(substr(colnames(X),1,12)),"seizure_history"]=="yes"]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+
+X = X[,!is.na(cli[tolower(substr(colnames(X),1,12)),"IDH.status"])]
+X = X[,order(ifelse(cli[tolower(substr(colnames(X),1,12)),"IDH.status"]=="WT",0,1))]
+
+idh <- as.character(cli[tolower(substr(colnames(X),1,12)),"IDH.status"])
+idh = factor(ifelse(idh=="WT", 1, 2), levels = c(1,2), labels = c("WT", "Mutant"))
+pheno <- new("AnnotatedDataFrame", data = data.frame(idh), varMetadata = data.frame(labelDescription="idh"))
+rownames(pheno@data) <- colnames(X)
+eset <- new("ExpressionSet", exprs = X, phenoData = pheno)
+
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+
+At = gsealmPerm(eSet = eset, formula = ~ idh, mat = a,nperm = 100000, detailed = T)
+
+x = NULL
+for(el in rownames(At$stats)){
+  x[el] = At$pvalues[el,ifelse(At$stats[el,1]<0, "Lower", "Upper")]
+}
+#x
+df = data.frame(drug = rownames(At$stats), y = At$stats[,1], p = x, X = 15, X2 = -20)
+df = df[order(df$y),]
+df$x = x = 1:length(x)
+df$IDH = as.factor(ifelse(rownames(df)=="acetazolamide", "WT", ifelse(rownames(df)=="zonisamide", "WT", ifelse(rownames(df)=="perampanel", "Mutant", "NS"))))
+df$col = as.factor(ifelse(rownames(df)=="acetazolamide", "cyan", ifelse(rownames(df)=="zonisamide", "cyan", ifelse(rownames(df)=="perampanel", "darkgoldenrod", "gray"))))
+df$p = paste("p = ", signif(df$p, 3), sep = "")
+df$x = -df$x
+p <- ggplot(df, aes(x=x, y=y, fill=IDH)) + 
+	    geom_bar(stat="identity", position="identity", colour = "gray") +
+      scale_fill_manual(values=unique(as.character(df$col[order(df$IDH)]))) +
+      geom_text(data=df, aes(x = x, y = X, label = p, hjust=0)) +
+      geom_text(data=df, aes(x = x, y = X2, label = drug, hjust=0)) +
+      coord_flip() +
+      expand_limits(y = c(-20, 20)) +
+      labs(title="Signature association", x="", y = "GSEAlm statistic") +
+      theme_bw() + 
+      theme(legend.position="bottom", axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.title = element_text(size=20, face="bold", hjust = 0.5))
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+pdf(file="overlapREP.pdf",width=8,height=6)
+p
+dev.off()
+```
+
+
+
+
+```{r}
+X = ds_epi$VST
+
+f=function(x){
+  x = 2^x
+  return(x)
+}
+x = colnames(X)
+X = flip(apply(X,1,f))
+colnames(X) = rev(x)
+
+
+x = dsigdb[Dsigdb[Dsigdb$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X = X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+epi <- as.character(cli[tolower(substr(colnames(X),1,12)),"seizure_history"])
+pheno <- new("AnnotatedDataFrame", data = data.frame(epi), varMetadata = data.frame(labelDescription="epi"))
+rownames(pheno@data) <- colnames(X)
+eset <- new("ExpressionSet", exprs = X, phenoData = pheno)
+
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+
+At = gsealmPerm(eSet = eset, formula = ~ epi, mat = a,nperm = 1000, detailed = T)
+At$pvalues
+
+A = GSNormalize(dataset = X, incidence = a)
+
+f=function(x){
+  x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x)
+  x=x/sd(x)
+  return(x)
+}
+x = colnames(A)
+A = flip(apply(A,1,f))
+colnames(A) = rev(x)
+
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","TERT.expression.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "TERT", "Cod1p19q", "Location", "Grade", "Histology")
+#x
+
+A = A[, order(colMeans(A[c("zonisamide","acetazolamide"),]) - colMeans(A[!((rownames(A)=="zonisamide")|(rownames(A)=="acetazolamide")),]))]
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+pdf(file="Dsigdb_heatmap.pdf",width=16,height=(1+length(x)))
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("neoplasm_histologic_grade","histological_type","location","age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status")]
+  
+  colnames(x) = c("Grade", "Histology", "Location", "Age", "IDH", "Cod1p19q", "TERT", "Karnofsky", "MGMT")
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(A)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(A)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(A)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(A)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"))
+  
+  ha <- HeatmapAnnotation(x,col=col, annotation_legend_param = list(title_gp = gpar(fontsize = 14),labels_gp = gpar(fontsize = 12)))
+  
+  Heatmap(M,
+          top_annotation = ha,
+          column_title = cn,
+          cluster_rows = F,
+          cluster_columns = F,
+          #row_order = 1:length(colnames(M)),
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = tolower(lg)=="yes",
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Signature expression",
+          column_title_gp = gpar(fontsize = 14),
+          #row_title_gp = gpar(fontsize = 16),
+          row_names_gp = gpar(fontsize = 14),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 14),labels_gp = gpar(fontsize = 12), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          #clustering_distance_columns = "canberra",
+          #clustering_method_columns = "average",
+          #split = ifelse(reactome[match(rownames(M),rownames(reactome)),]$NES>0, "Upregulated", "Downregulated"),
+          col = colorRamp2((c(min(as.matrix(A)), median(as.matrix(A)) - 2*sd(as.matrix(A)),median(as.matrix(A)) - 1*sd(as.matrix(A)), median(as.matrix(A)), median(as.matrix(A)) + 1*sd(as.matrix(A)),  median(as.matrix(A)) + 2*sd(as.matrix(A)), max(as.matrix(A))))[order(c(min(as.matrix(A)), median(as.matrix(A)) - 2*sd(as.matrix(A)),median(as.matrix(A)) - 1*sd(as.matrix(A)), median(as.matrix(A)), median(as.matrix(A)) + 1*sd(as.matrix(A)),  median(as.matrix(A)) + 2*sd(as.matrix(A)), max(as.matrix(A))))],
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+ht1 = Ht(M=A[,cli[substr(tolower(colnames(A)),1,12),]$seizure_history=="no"], lg="no", cn = "No seizure history")
+ht2 = Ht(M=A[,cli[substr(tolower(colnames(A)),1,12),]$seizure_history=="yes"], lg="yes", cn = "Seizure history")
+draw(ht1+ht2, heatmap_legend_side = "bottom") #
+dev.off()
+
+
+```
+
+```{r}
+A = as.data.frame(flip(A))
+
+A = A[,rev(hclust(dist(flip(A)))$order)]
+
+
+cm = cor(as.matrix(A))
+cm[diag(T,dim(cm))]=0
+
+
+act = function(A, cm){
+  a = rev(rownames(cm))
+  b = rev(colnames(cm))
+  cort = matrix(-3,ncol = ncol(cm), nrow = nrow(cm))
+  colnames(cort) = colnames(cm)
+  rownames(cort) = rownames(cm)
+  for (el in a) {
+    b = b[!b==el]
+    for(EL in b){
+      cm[el,EL] = 0
+      cort[el,EL] = ifelse(cor.test(A[,el], A[,EL])$p.value==0, 0, -log(cor.test(A[,el], A[,EL])$p.value))
+    }
+  }
+  cort[cort==0]=1.4*max(cort)
+  cort[cort<0] = 0
+  cort = cort*(-1) - 4
+  cort[cort==-4] = 0
+  cm = cm + cort
+  return(cm)
+}
+
+cm = act(A, cm)
+
+anno = data.frame(Cor = rep(0, times = dim(cm)[1]), `p` = rep(1, times = dim(cm)[1]), row.names = rownames(cm))
+
+col = list(Cor = colorRamp2(c((-1), (-0.95), (-0.5),0,0.5,0.95,1),
+                            c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")),
+           `p` = colorRamp2(c(2^(min(cm)+4), 2^(median(cm[cm<(-3.9)])+4), 0.05, 1),
+                                  c("darkgreen", "forestgreen", "yellowgreen", "white")))
+ha <- HeatmapAnnotation(anno,col=col)
+
+x = as.character(colnames(A))
+ht = Heatmap(cm[x,x],
+              top_annotation = ha,
+              cluster_columns = F,
+              cluster_rows = F,
+              name = "Cor",
+              col = colorRamp2(c(min(cm), median(cm[cm<(-3.9)]), log(0.05)-4, -4,(-1), (-0.95), (-0.5), 0,0.5,0.95,1),
+                                   c("darkgreen", "forestgreen", "yellowgreen", "white","darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+pdf(file="Dsigdb_Cor.pdf",width=8,height=6)
+draw(ht, show_heatmap_legend = F)
+dev.off()
+
+X = ds_epi$VST
+
+f=function(x){
+  x = 2^x
+  return(x)
+}
+x = colnames(X)
+X = flip(apply(X,1,f))
+colnames(X) = rev(x)
+X = X[,cli[tolower(substr(colnames(X),1,12)),"seizure_history"]=="yes"]
+
+
+x = dsigdb[Dsigdb[Dsigdb$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X = X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],cli[tolower(substr(colnames(X),1,12)),"seizure_history"]=="yes"]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+
+X = X[,!is.na(cli[tolower(substr(colnames(X),1,12)),"IDH.status"])]
+X = X[,order(ifelse(cli[tolower(substr(colnames(X),1,12)),"IDH.status"]=="WT",0,1))]
+
+idh <- as.character(cli[tolower(substr(colnames(X),1,12)),"IDH.status"])
+idh = factor(ifelse(idh=="WT", 1, 2), levels = c(1,2), labels = c("WT", "Mutant"))
+pheno <- new("AnnotatedDataFrame", data = data.frame(idh), varMetadata = data.frame(labelDescription="idh"))
+rownames(pheno@data) <- colnames(X)
+eset <- new("ExpressionSet", exprs = X, phenoData = pheno)
+
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+
+At = gsealmPerm(eSet = eset, formula = ~ idh, mat = a,nperm = 100000, detailed = T)
+
+x = NULL
+for(el in rownames(At$stats)){
+  x[el] = At$pvalues[el,ifelse(At$stats[el,1]<0, "Lower", "Upper")]
+}
+#x
+df = data.frame(drug = rownames(At$stats), y = At$stats[,1], p = x, X = 15, X2 = -20)
+df = df[order(df$y),]
+df$x = x = 1:length(x)
+df$IDH = as.factor(ifelse(rownames(df)=="acetazolamide", "WT", ifelse(rownames(df)=="zonisamide", "WT", ifelse(rownames(df)=="perampanel", "Mutant", "NS"))))
+df$col = as.factor(ifelse(rownames(df)=="acetazolamide", "cyan", ifelse(rownames(df)=="zonisamide", "cyan", ifelse(rownames(df)=="perampanel", "darkgoldenrod", "gray"))))
+df$p = paste("p = ", signif(df$p, 3), sep = "")
+df$x = -df$x
+p <- ggplot(df, aes(x=x, y=y, fill=IDH)) + 
+	    geom_bar(stat="identity", position="identity", colour = "gray") +
+      scale_fill_manual(values=unique(as.character(df$col[order(df$IDH)]))) +
+      geom_text(data=df, aes(x = x, y = X, label = p, hjust=0)) +
+      geom_text(data=df, aes(x = x, y = X2, label = drug, hjust=0)) +
+      coord_flip() +
+      expand_limits(y = c(-20, 20)) +
+      labs(title="Signature association", x="", y = "GSEAlm statistic") +
+      theme_bw() + 
+      theme(legend.position="bottom", axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.title = element_text(size=20, face="bold", hjust = 0.5))
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+pdf(file="overlapDsigdb.pdf",width=8,height=6)
+p
+dev.off()
+```
+
+
+
+```{r}
+X = ds_epi$VST
+
+f=function(x){
+  x = 2^x
+  return(x)
+}
+x = colnames(X)
+X = flip(apply(X,1,f))
+colnames(X) = rev(x)
+
+x = rep[REP[REP$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X =X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+epi <- as.character(cli[tolower(substr(colnames(X),1,12)),"seizure_history"])
+pheno <- new("AnnotatedDataFrame", data = data.frame(epi), varMetadata = data.frame(labelDescription="epi"))
+rownames(pheno@data) <- colnames(X)
+eset <- new("ExpressionSet", exprs = X, phenoData = pheno)
+```
+
+```{r}
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+```
+
+```{r}
+At = gsealmPerm(eSet = eset, formula = ~ epi, mat = a,nperm = 1000, detailed = T)
+At$pvalues
+```
+
+```{r}
+A = GSNormalize(dataset = X, incidence = a)
+```
+
+```{r}
+f=function(x){
+  x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x)
+  x=x/sd(x)
+  return(x)
+}
+x = colnames(A)
+A = flip(apply(A,1,f))
+colnames(A) = rev(x)
+```
+
+```{r}
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","TERT.expression.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "TERT", "Cod1p19q", "Location", "Grade", "Histology")
+#x
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+png(file="Rep_heatmap.png",width=500,height=(30+30*length(x)),res=400,units = "mm")
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("neoplasm_histologic_grade","histological_type","location","age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status")]
+  
+  colnames(x) = c("Grade", "Histology", "Location", "Age", "IDH", "Cod1p19q", "TERT", "Karnofsky", "MGMT")
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(A)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(A)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             #Seizures = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(A)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(A)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"))
+  
+  ha <- HeatmapAnnotation(x,col=col, annotation_legend_param = list(title_gp = gpar(fontsize = 18),labels_gp = gpar(fontsize = 14)))
+  
+  Heatmap(M,
+          top_annotation = ha,
+          column_title = cn,
+          cluster_rows = F,
+          #row_order = 1:length(colnames(M)),
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = tolower(lg)=="yes",
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Signature expression",
+          #column_title_gp = gpar(fontsize = 30),
+          row_title_gp = gpar(fontsize = 14),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 14),labels_gp = gpar(fontsize = 12), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          clustering_distance_columns = "canberra",
+          clustering_method_columns = "average",
+          #split = ifelse(reactome[match(rownames(M),rownames(reactome)),]$NES>0, "Upregulated", "Downregulated"),
+          col = colorRamp2(c(min(as.matrix(M)), median(as.matrix(M)) - 2*sd(as.matrix(M)),median(as.matrix(M)) - 1*sd(as.matrix(M)), median(as.matrix(M)), median(as.matrix(M)) + 1*sd(as.matrix(M)),  median(as.matrix(M)) + 2*sd(as.matrix(M)), max(as.matrix(M))),
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+ht1 = Ht(M=A[,cli[substr(tolower(colnames(A)),1,12),]$seizure_history=="no"], lg="no", cn = "No seizure history")
+ht2 = Ht(M=A[,cli[substr(tolower(colnames(A)),1,12),]$seizure_history=="yes"], lg="yes", cn = "Seizure history")
+draw(ht1+ht2) #
+dev.off()
+```
+
+
+
+```{r}
+A = as.data.frame(flip(A))
+```
+
+
+```{r}
+cm = cor(as.matrix(A))
+cm[diag(T,dim(cm))]=0
+
+
+act = function(A, cm){
+  a = rev(rownames(cm))
+  b = rev(colnames(cm))
+  cort = matrix(-3,ncol = ncol(cm), nrow = nrow(cm))
+  colnames(cort) = colnames(cm)
+  rownames(cort) = rownames(cm)
+  for (el in a) {
+    b = b[!b==el]
+    for(EL in b){
+      cm[el,EL] = 0
+      cort[el,EL] = ifelse(cor.test(A[,el], A[,EL])$p.value==0, 0, -log(cor.test(A[,el], A[,EL])$p.value))
+    }
+  }
+  cort[cort==0]=1.4*max(cort)
+  cort[cort<0] = 0
+  cort = cort*(-1) - 4
+  cort[cort==-4] = 0
+  cm = cm + cort
+}
+
+cm = act(A, cm)
+
+```
+
+
+```{r}
+anno = data.frame(Cor = rep(0, times = dim(cm)[1]), `p` = rep(1, times = dim(cm)[1]), row.names = rownames(cm))
+
+col = list(Cor = colorRamp2(c((-1), (-0.95), (-0.5),0,0.5,0.95,1),
+                            c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")),
+           `p` = colorRamp2(c(2^(min(cm)+4), 2^(median(cm[cm<(-3.9)])+4), 0.05, 1),
+                                  c("darkgreen", "forestgreen", "yellowgreen", "white")))
+ha <- HeatmapAnnotation(anno,col=col)
+
+x = as.character(REP[REP$sel==1,]$pathway)
+ht = Heatmap(cm[x,x],
+              top_annotation = ha,
+              cluster_columns = F,
+              cluster_rows = F,
+              name = "Cor",
+              col = colorRamp2(c(min(cm), median(cm[cm<(-3.9)]), log(0.05)-4, -4,(-1), (-0.95), (-0.5), 0,0.5,0.95,1),
+                                   c("darkgreen", "forestgreen", "yellowgreen", "white","darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+png(file="REP_Cor.png",width=200,height=160,res=400,units = "mm")
+draw(ht, show_heatmap_legend = F)
+dev.off()
+```
+
+```{r}
+X = ds_epi$VST
+
+f=function(x){
+  x = 2^x
+  return(x)
+}
+x = colnames(X)
+X = flip(apply(X,1,f))
+colnames(X) = rev(x)
+
+x = rep[REP[REP$sel==1,]$pathway]
+
+X = X[,cli[tolower(substr(colnames(X),1,12)),"seizure_history"]=="yes"]
+
+
+x = rep[REP[REP$sel==1,]$pathway]
+
+f = function(x,M){
+  return(x[!is.na(match(x,rownames(M)))])
+}
+
+x = lapply(x, f, M=X)
+x = x[(sapply(x,length)>0)&(sapply(x,length)<1000)]
+
+X = X[unique(unlist(x))[!is.na(match(unique(unlist(x)), rownames(X)))],cli[tolower(substr(colnames(X),1,12)),"seizure_history"]=="yes"]
+
+'
+X = X[order(rowSums(X), decreasing = T),]
+x=trl$entrezgene[match(rownames(X), trl$hgnc_symbol)]
+X = X[!is.na(x),]
+x=x[!is.na(x)]
+X = X[!duplicated(x),]
+x=x[!duplicated(x)]
+rownames(X)=as.character(x)
+'
+
+
+```
+
+```{r}
+X = X[,!is.na(cli[tolower(substr(colnames(X),1,12)),"IDH.status"])]
+X = X[,order(ifelse(cli[tolower(substr(colnames(X),1,12)),"IDH.status"]=="WT",0,1))]
+
+idh <- as.character(cli[tolower(substr(colnames(X),1,12)),"IDH.status"])
+idh = factor(ifelse(idh=="WT", 1, 2), levels = c(1,2), labels = c("WT", "Mutant"))
+pheno <- new("AnnotatedDataFrame", data = data.frame(idh), varMetadata = data.frame(labelDescription="idh"))
+rownames(pheno@data) <- colnames(X)
+eset <- new("ExpressionSet", exprs = X, phenoData = pheno)
+
+a = matrix(0, ncol = length(rownames(X)), nrow = length(x))
+rownames(a) = names(x)
+colnames(a) = rownames(X)
+for(el in names(x)){
+  a[el,x[[el]]]=1
+}
+
+At = gsealmPerm(eSet = eset, formula = ~ idh, mat = a,nperm = 100000, detailed = T)
+```
+
+
+
+```{r}
+x = NULL
+for(el in rownames(At$stats)){
+  x[el] = At$pvalues[el,ifelse(At$stats[el,1]<0, "Lower", "Upper")]
+}
+#x
+
+```
+
+```{r}
+df = data.frame(drug = rownames(At$stats), y = At$stats[,1], p = x, x = 1:length(x), X = 15, X2 = -20)
+df$IDH = as.factor(ifelse(df$p>0.05, "NS", ifelse(df$y<0, "WT", "Mutant")))
+df$col = as.factor(ifelse(df$p>0.05, "gray", ifelse(df$y<0, "cyan", "darkgoldenrod")))
+df$p = paste("p = ", signif(df$p, 3), sep = "")
+df$x = -df$x
+p <- ggplot(df, aes(x=x, y=y, fill=IDH)) + 
+	    geom_bar(stat="identity", position="identity", colour = "gray") +
+      scale_fill_manual(values=unique(as.character(df$col[order(df$IDH)]))) +
+      geom_text(data=df, aes(x = x, y = X, label = p, hjust=0)) +
+      geom_text(data=df, aes(x = x, y = X2, label = drug, hjust=0)) +
+      coord_flip() +
+      expand_limits(y = c(-20, 20)) +
+      labs(title="Signature association", x="", y = "GSEAlm statistic") +
+      theme_bw() + 
+      theme(legend.position="bottom", axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.title = element_text(size=20, face="bold", hjust = 0.5))
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea\\drugs")
+png(file="overlap_rep.png",width=156,height=160,res=400,units = "mm")
+p
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# *** population ***
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+lm=read.table("LM22.txt",sep = "\t", header = T)
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+ecbs = ds_epi$VST
+ecbs = ecbs[order(rowSums(ecbs), decreasing = T),]
+ecbs = ecbs[!duplicated(rownames(ecbs)),]
+ecbs=ecbs[match(lm$Gene.symbol, rownames(ecbs)),]
+ecbs=ecbs[!is.na(rownames(ecbs)),]
+write.table(as.data.frame(ecbs),sep = "\t",file="cnsl_ecbs.txt")
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+#x=read.csv("xCell_cnsl_exprs_xCell_1454111418.csv")
+x = read.csv("CIBERSORT.Output_Job5.csv", header = T)
+rownames(x)=x$Input.Sample
+for(el in c("Input.Sample","P.value","Pearson.Correlation","RMSE")){
+  x = x[,!colnames(x)==el]
+}
+f=function(x){
+  x = x/sum(x)
+}
+xsort = as.data.frame(flip(x))
+xsort = apply(as.matrix(xsort),2,f)
+x=wilcoxon(xsort, as.character(cli[substr(tolower(colnames(xsort)),1,12),"seizure_history"]), "yes", "no")
+x
+```
+
+
+
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+#x=read.csv("xCell_cnsl_exprs_xCell_1454111418.csv")
+x = read.table("xCell_TCGA_RSEM.txt", header = T, sep = "\t")
+rownames(x)=x$X
+x = x[,!colnames(x)=="X"]
+f=function(x){
+  x = x/sum(x)
+}
+xcell = as.data.frame(x)
+xcell = apply(as.matrix(xcell),2,f)
+'
+x=as.data.frame(flip(x))
+
+sel = c("Adipocytes", "Chondrocytes", "CLP", "CMP", "Endothelial cells", "Epithelial cells", "Fibroblasts","Hepatocytes", "Keratinocytes", "ly Endothelial cells", "Megakaryocytes", "Myocytes", "Melanocytes","MEP","Mesangial cells", "MPP","MSC","MPP","MSC", "Preadipocytes","pro B-cells","Skeletal muscle", "Smooth muscle", "Sebocytes", "Platelets", "Osteoblast", "GMP", "HSC","mv Endothelial cells" )
+x$Other = rowSums(x[,sel])
+for(el in sel){
+  x = x[,!colnames(x)==el]
+}
+
+f=function(x){
+  "
+  x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x)
+  x=x/sd(x)
+  "
+  x = x/sum(x)
+}
+
+x = apply(x,1,f)
+xcell=as.data.frame(x)
+'
+
+x=wilcoxon(xcell, as.character(cli[substr(tolower(gsub("\\.", "-", colnames(xcell))),1,12),"seizure_history"]), "yes", "no")
+x
+```
+
+```{r}
+# *** protein ***
+```
+
+```{r}
+#prot[1:10,1:10]
+dim(prot)
+
+#prot=prot[,TCGAsampleSelect(gsub("\\.", "-", colnames(prot)), "01")]
+dim(prot)
+prot=prot[,!is.na(cli[tolower(substr(gsub("\\.", "-", colnames(prot)), 1, 12)),]$seizure_history)]
+dim(prot)
+
+#prot[1:10,]
+
+dim(prot)
+for(el in rownames(prot)){
+  if(sum(is.na(prot[el,]))>0.6*dim(prot)[2]){
+    prot = prot[!(rownames(prot)==el),]
+  }
+}
+dim(prot)
+
+colnames(prot) = tolower(substr(gsub("\\.", "-", colnames(prot)), 1, 12))
+```
+
+```{r}
+pro = normalizeQuantiles(prot)
+
+f=function(x){
+#  x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x, na.rm = T)
+  x=x/sd(x, na.rm = T)
+  return(x)
+}
+pro = flip(apply(as.matrix(pro),1,f))
+
+```
+
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+annot = read.table("A_PROT.txt", sep="\t", header=TRUE)
+```
+
+```{r}
+annot = as.data.frame(annot)
+annot$gexp = res[as.character(annot$Gene.Name), "padj"]
+```
+
+```{r}
+as.character(annot[(annot$gexp<0.1)&!is.na(annot$gexp),"Composite.Element.REF"])
+```
+
+```{r}
+x = wilcoxon(M=pro[as.character(annot[(annot$gexp<0.1)&!is.na(annot$gexp),"Composite.Element.REF"]),],
+               resp = cli[colnames(pro),"seizure_history"],
+               hi = "yes",
+               lo = "no")
+x
+```
+
+```{r}
+# *** BOOKMARK ***
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+save.image("bookmark.RData")
+save.image("bookmarkGSEA.RData")
+```
+
+```{r}
+rm(list = ls())
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\dt")
+load("bookmarkGSEA.RData")
+```
+
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\gsea")
+x = reactome[reactome$sel==1,]
+
+x = x[order(x$NES, decreasing = T),]
+x$perc = sapply(x$pathway, function(X){
+  y = dropNA(match(Reactome[[X]], res$entrez))
+  return(length(y))
+})
+x$type = ifelse(x$NES>0, "Upregulated", "Downregulated")
+
+x$pathway=sapply(as.character(x$pathway), function(x){
+  if(nchar(x)<30){
+    return (x)
+  } else {
+    y = as.character(gregexpr(pattern =' ',x))
+    y = as.numeric(unlist(strsplit(gsub("\\)", "", gsub("c\\(", "",y)), ", ")))
+    y = y[which(abs(y-(nchar(x)/2))==min(abs(y-(nchar(x)/2))))]
+    x = paste(sep = "\n", substr(x, 1, y-1),substr(x, y+1, nchar(x)))
+    return (x)
+  }
+})
+
+x$pathway = with(x, reorder(pathway, NES))
+
+p <- ggplot(data = x) + 
+  theme_bw() +
+  scale_size_area(max_size = 10) +
+  geom_point(aes(size = perc, colour = pval, x=pathway, y=NES)) +
+  coord_trans(y = abs) +
+  coord_flip()  +
+  facet_grid(~type, scale = "free_x") + #, space = "free_x", 
+  scale_colour_gradientn(colours = c("cyan", "blue", "red"),
+                                 values = c(0,(mean(x[,"pval"])-min(x[,"pval"]))/(max(x[,"pval"])),1),
+                                 trans = "reverse")+
+  #scale_x_continuous(expand = c(0,0)) +
+  labs(title="", x="Term", y = "Normalized Enrichment Score", size = "Genes in term", colour = "p-value")
+p
+
+png("GSEA.png", width = 250, height = 150, units = "mm", res = 400)
+plot(p)
+dev.off()
+
+pdf("GSEA.pdf", width = 10, height = 6)
+plot(p)
+dev.off()
+```
+
+```{r}
+length(dropNA(match(Reactome[[1]], res$entrez)))
+```
+
+```{r}
+reactome
+```
+
+```{r}
+x = "INFLUENZA VIRAL RNA TRANSCRIPTION AND REPLICATION"
+y = as.character(gregexpr(pattern =' ',x))
+y = as.numeric(unlist(strsplit(gsub("\\)", "", gsub("c\\(", "",y)), ", ")))
+y = y[which(abs(y-(nchar(x)/2))==min(abs(y-(nchar(x)/2))))]
+x = paste(sep = "\n", substr(x, 1, y-1),substr(x, y+1, nchar(x)))
+x
+```
+
+```{r}
+nexp = ds_epi$VST
+sigg = res[!res$gr=="nc",]
+
+X = flip(nexp[rownames(res[!res$gr=="nc",]),])
+
+'
+Xn = apply(X,2,rank)
+Xn = Xn -1
+Xn = Xn/max(Xn)
+'
+
+f=function(x){
+  #x[x==-Inf]=min(x[!x==-Inf])-1
+  x=x-median(x)
+  x=x/sd(x)
+}
+
+Xn = apply(X,2,f)
+
+Xn=as.data.frame(Xn)
+Xcli = cbind(Xn, cli[substr(tolower(gsub("\\.", "-", rownames(Xn))), 1, 12), ])
+Xn=flip(Xn)
+
+Xn = Xn[,order(colMeans(Xn[res[res$gr=="Upregulated",]$hgnc,])-colMeans(Xn[res[res$gr=="Downregulated",]$hgnc,]), decreasing = T)]
+```
+
+
+
+```{r}
+x = cli[tolower(substr(colnames(Xn),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","TERT.expression.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "TERT", "Cod1p19q", "Location", "Grade", "Histology")
+#x
+
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+pdf(file="Fig1Av.pdf",width=18,height=9)
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("seizure_history","neoplasm_histologic_grade","histological_type","IDH.status","X1p.19q.codeletion")] #"location","age_at_initial_pathologic_diagnosis","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status"
+  
+  colnames(x) = c("Seizure history", "Grade", "Histology", "IDH", "Cod1p19q") #"Location", "Age", "TERT", "Karnofsky", "MGMT"
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             #Age = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             #Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"))
+  
+  ha <- HeatmapAnnotation(df = x, col=col,show_legend = T,annotation_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20)))
+  
+  Heatmap(M,
+          gap = unit(0.1, "in"),
+          top_annotation = ha,
+          column_title = cn,
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = F,
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Normalized gene expression level",
+          column_title_gp = gpar(fontsize = 36),
+          row_title_gp = gpar(fontsize = 30),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          cluster_columns = F,
+          #clustering_distance_columns = "canberra",
+          #clustering_method_columns = "average",
+          split = relevel(x = as.factor(res[match(rownames(Xn),rownames(res)),]$gr), ref = "Upregulated"),
+          col = colorRamp2(c(min(as.matrix(M)), median(as.matrix(M)) - 2*sd(as.matrix(M)),median(as.matrix(M)) - 1*sd(as.matrix(M)), median(as.matrix(M)), median(as.matrix(M)) + 1*sd(as.matrix(M)),  median(as.matrix(M)) + 2*sd(as.matrix(M)), max(as.matrix(M))),
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+
+ht1 = Ht(M=Xn, lg="yes", cn = "Heatmap of gene expression")
+#ht2 = Ht(M=Xn[,cli[substr(tolower(colnames(Xn)),1,12),]$seizure_history=="yes"], lg="no", cn = "Seizure history")
+draw(ht1, heatmap_legend_side = "bottom", show_annotation_legend=T) #+ha
+dev.off()
+```
+```{r}
+setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res")
+png(file="Fig1Av.png",width=18,height=9, units = "in", res = 400)
+
+Ht = function(M, lg="no", cn = ""){
+  x = cli[tolower(substr(colnames(M),1,12)),c("seizure_history","neoplasm_histologic_grade","histological_type","IDH.status","X1p.19q.codeletion")] #"location","age_at_initial_pathologic_diagnosis","TERT.expression.status", "karnofsky_performance_score", "MGMT.promoter.status"
+  
+  colnames(x) = c("Seizure history", "Grade", "Histology", "IDH", "Cod1p19q") #"Location", "Age", "TERT", "Karnofsky", "MGMT"
+  
+  col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+             #Age = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green"),
+             #Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink"))
+  
+  ha <- HeatmapAnnotation(df = x, col=col,show_legend = T,annotation_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20)))
+  
+  Heatmap(M,
+          gap = unit(0.1, "in"),
+          top_annotation = ha,
+          column_title = cn,
+          show_row_dend = F,
+          show_column_dend = F,
+          show_column_names = F,
+          show_row_names = F,
+          show_heatmap_legend = tolower(lg)=="yes",
+          name = "Normalized gene expression level",
+          column_title_gp = gpar(fontsize = 36),
+          row_title_gp = gpar(fontsize = 30),
+          heatmap_legend_param = list(title_gp = gpar(fontsize = 24),labels_gp = gpar(fontsize = 20), legend_direction = "horizontal", legend_width = unit(8, "in")),
+          cluster_columns = F,
+          #clustering_distance_columns = "canberra",
+          #clustering_method_columns = "average",
+          split = relevel(x = as.factor(res[match(rownames(Xn),rownames(res)),]$gr), ref = "Upregulated"),
+          col = colorRamp2(c(min(as.matrix(M)), median(as.matrix(M)) - 2*sd(as.matrix(M)),median(as.matrix(M)) - 1*sd(as.matrix(M)), median(as.matrix(M)), median(as.matrix(M)) + 1*sd(as.matrix(M)),  median(as.matrix(M)) + 2*sd(as.matrix(M)), max(as.matrix(M))),
+                             c("darkblue", "blue", "cyan", "white", "yellow", "red", "darkred")))
+}
+
+
+ht1 = Ht(M=Xn, lg="yes", cn = "Heatmap of gene expression")
+#ht2 = Ht(M=Xn[,cli[substr(tolower(colnames(Xn)),1,12),]$seizure_history=="yes"], lg="no", cn = "Seizure history")
+draw(ht1, heatmap_legend_side = "bottom", show_annotation_legend=T) #+ha
+dev.off()
+```
+
+```{r}
+hseq = NULL
+hseq = as.data.frame(flip(Nexp))
+#,
+for(gene in c("REST")){
+  rest = ifelse(gene == "REST", F, ifelse(((cor.test(hseq[,gene], hseq[,"REST"])$p.value<1e-3) & (abs(cor(hseq[,gene], hseq[,"REST"]))>0.25)), T, F))
+  df = data.frame(sn = c("_Cod1p19q","_MutIDH", "", "_Astrocytic_histology", "_surv", "_Karnofsky"),
+                  cn = c("X1p.19q.codeletion", "IDH.status", "seizure_history", "histological_type", "surv", "karnofsky_performance_score"),
+                  pn = c("1p19q", "IDH status", "Seizure history", "Histology", "Survival", "KPS"))
+    
+  rownames(df) = df$pn
+
+  for(cn in df$cn){
+    hseq[,cn] = cli[tolower(substr(rownames(hseq),1,12)),cn]
+  }
+  
+  df = df[res[gene,paste("padj", df$sn, sep = "")]<0.1,]
+  
+  col = list(IDH.status = c("WT" = "cyan", "Mutant" = "darkgoldenrod"),
+               TERT.expression.status = c("Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+               seizure_history = c("yes" = "#008FFF", "no" = "#FF0007"),
+               X1p.19q.codeletion = c("codel" = "brown", "non-codel" = "cornflowerblue"),
+               histological_type = c("astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green", "glioblastoma" = "black"),
+               neoplasm_histologic_grade = c("g2" = "forestgreen", "g3" = "pink", "g4" = "black"),
+               location = c("Temporal" = "orange", "Other" = "lightblue"),
+               MGMT.promoter.status = c("Methylated" = "cyan4", "Unmethylated"="coral"))
+    
+  lp = list()
+  for(el in rownames(df)){
+    if(el == "Survival"){
+      hseq$Expression = "high"
+      m=maxstat.test(formula = as.formula(paste("surv ~ `", gene, "`", sep="")), data=hseq, smethod="LogRank", pmethod="Lau94", minprop = 0.2, maxprop=0.8)
+      hseq$Expression[hseq[, gene] <m$estimate] = "low"
+      my_grob = grobTree(textGrob(paste("PPp = ", as.character(signif(pchisq((survdiff(surv ~ Expression, data = hseq, rho = 1))$chisq, 1, lower.tail = F), digits = 3)),
+            "\nMHp = ", as.character(signif(pchisq((survdiff(surv ~ Expression, data = hseq, rho = 0))$chisq, 1, lower.tail = F), digits = 3)),
+            "\nCoxp = ", as.character(signif(res[gene, "pvalue_surv"], digits = 3)),
+            sep = ""),
+                                  x=0.5,y=0.9, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+      km <- survfit(surv ~ Expression, data = hseq, conf.type = "log")
+      p=ggsurvplot(km, conf.int = F, pval = F, surv.median.line = "hv", palette = c("red4", "cyan4"))
+      p=p$plot
+      p = p + theme_bw() + annotation_custom(my_grob) + labs(title="Prognostic value") + theme(legend.position = "top", legend.title=element_blank(), plot.title = element_text(hjust = 0.5))
+      lp[[el]] = p
+      
+    } else if((!(el=="KPS"))&(typeof(cli[,as.character(dropNA(df[el,"cn"]))]) == "integer")){
+      my_grob = grobTree(textGrob(paste("padj = ", signif(res[gene, paste("padj", as.character(dropNA(df[df$pn == el,"sn"])), sep = ""),],  digits = 3),  sep = ""), x=0.5,y=0.95, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+    
+      X = data.frame(hseq[!is.na(hseq[,as.character(dropNA(df[df$pn == el,"cn"]))]),c(gene, as.character(dropNA(df[df$pn == el,"cn"])))])
+      colnames(X) = c("y", "x")
+      p <- ggplot(X, aes(x=x, y=y, fill = x)) + 
+          theme_bw() +
+          geom_violin(trim=T) +
+          geom_boxplot(width=0.1, fill="white") +
+          #coord_cartesian(ylim = c(min(hseq[,gene]), max(hseq[,gene]))) +
+          scale_fill_manual(values=col[[as.character(dropNA(df[el,"cn"]))]])+
+          ylim(c(min(hseq[,gene]), 1.2*max(hseq[,gene]))) +
+          labs(title=ifelse(el == "Tert", toupper(as.character(df[el,"pn"])), as.character(df[el,"pn"])), y = paste(gene,  "norm. exp. lev."), x=NULL) +
+          theme(legend.position = "none", legend.title=element_blank(), plot.title = element_text(hjust = 0.5)) +
+          annotation_custom(my_grob)
+      lp[[el]] = p
+    } else if ((!(el=="KPS"))&(typeof(cli[,as.character(dropNA(df[el,"cn"]))]) == "double")){
+      X = as.data.frame(hseq[!is.na(hseq[,as.character(df[df$pn == el,"cn"])]),c(gene, as.character(df[df$pn == el,"cn"]), "seizure_history")])
+      colnames(X) = c("y", "x", "epi")
+      x = as.character(X$epi)
+      x[is.na(x)] = "NA"
+      
+      my_grob = grobTree(textGrob(paste("p = ", signif(cor.test(X$x, X$y)$p.value,  digits = 3),
+                                        "\ncoef = ", signif(cor(X$x, X$y),  digits = 3),  sep = ""), x=0.5,y=0.95, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+      
+      x = c("#008FFF", "#FF0007", "gray")
+      names(x) = c("yes", "no", "NA")
+      
+      p = ggplot(X, aes(x=x, y=y)) +
+        geom_point() +
+        theme_bw() +
+        labs(title=el, x=NULL,y = paste(gene,  "norm. exp. lev.")) +
+        ylim(c(min(hseq[,gene]), 1.2*max(hseq[,gene]))) +
+        scale_color_manual("black", values=c(x[as.character(unique(X$epi))])) +
+        geom_smooth(method="lm",formula=y~x, colour = "forestgreen") +
+        geom_point(aes(colour=epi)) +
+        theme(legend.position = "none", legend.title=element_blank(), plot.title = element_text(hjust = 0.5)) +
+        annotation_custom(my_grob)
+      lp[[el]] = p
+    }
+    if(rest){
+      X = as.data.frame(hseq[,c(gene, "REST", "seizure_history")])
+      colnames(X) = c("y", "x", "epi")
+      x = as.character(X$epi)
+      x[is.na(x)] = "NA"
+      
+      my_grob = grobTree(textGrob(paste("p = ", signif(cor.test(X$x, X$y)$p.value,  digits = 3),
+                                        "\ncoef = ", signif(cor(X$x, X$y),  digits = 3),  sep = ""), x=0.5,y=0.95, hjust=0.5, gp=gpar(fontface="bold", col="gray50")))
+      
+      x = c("#008FFF", "#FF0007", "gray")
+      names(x) = c("yes", "no", "NA")
+      
+      p = ggplot(X, aes(x=x, y=y)) +
+        geom_point() +
+        theme_bw() +
+        ylim(c(min(hseq[,gene]), 1.3*max(hseq[,gene]))) +
+        labs(title="Correlation with REST", x="REST norm. exp. lev", y = paste(gene,  "norm. exp. lev.")) +
+        scale_color_manual(values=c(x[as.character(unique(X$epi))])) +
+        geom_smooth(method="lm",formula=y~x, colour = "forestgreen") +
+        geom_point(aes(colour=epi)) +
+        theme(legend.position = "none", legend.title=element_blank(), plot.title = element_text(hjust = 0.5)) +
+        annotation_custom(my_grob)
+      lp[["rest"]] = p
+      x = c(rownames(df), "rest")
+    } else {
+      x = rownames(df)
+    }
+    lp = lp[x]
+  }
+  lp = lp[!is.na(names(lp))]
+  if(length(lp)>4){
+    x = grid.arrange(cowplot::plot_grid(plotlist = lp[1:(floor(length(lp)/2))], nrow = 1),
+                     cowplot::plot_grid(plotlist = lp[(floor(length(lp)/2)+1):(length(lp))], nrow = 1),
+                     nrow = 2)
+    setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\panels")
+    pdf(file=paste("panel2_", gene, ".pdf", sep = ""),width=2*length(lp),height=10)
+    plot(x)
+    dev.off()
+  } else {
+    x = cowplot::plot_grid(plotlist = lp, nrow = 1)
+    setwd("D:\\Files\\Main_directory\\Nencki\\Epi\\res\\panels")
+    pdf(file=paste("panel2_", gene, ".pdf", sep = ""),width=4*length(lp),height=5)
+    plot(x)
+    dev.off()
+  }
+}
+```
+
+```{r}
+df
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

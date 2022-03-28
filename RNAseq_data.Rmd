@@ -1,0 +1,452 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+library(data.table)
+library(survival)
+library(survminer)
+library(biomaRt)
+library(rjson)
+library(TCGAutils)
+```
+
+
+```{r}
+wd = getwd()
+```
+
+
+```{r}
+flip <- function(x){
+  x = as.matrix(x)
+  y = t(apply(x, 2, rev))
+  rownames(y)=colnames(x)
+  colnames(y)=rev(rownames(x))
+  return (y)
+}
+
+
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+dnc = c("dnc", ls())
+```
+
+
+```{r}
+#downloaded from firehose website
+setwd(paste0(wd, "/dt"))
+clin = read.csv("GBMLGG.clin.merged.csv", header=F)
+rownames(clin) = clin[,1]
+clin = clin[,-1]
+clin = as.data.frame(flip(clin))
+
+rownames(clin) = clin$patient.bcr_patient_barcode
+
+x=c("patient.bcr_patient_barcode", "admin.disease_code", "patient.age_at_initial_pathologic_diagnosis", "patient.animal_insect_allergy_history", "patient.asthma_history", "patient.days_to_birth","patient.days_to_death", "patient.days_to_initial_pathologic_diagnosis", "patient.days_to_last_followup","patient.days_to_death", "patient.eczema_history", "patient.ethnicity", "patient.family_history_of_cancer", "patient.family_history_of_primary_brain_tumor", "patient.first_presenting_symptom", "patient.food_allergy_history", "patient.gender", "patient.hay_fever_history", "patient.headache_history", "patient.histological_type", "patient.icd_10", "patient.icd_o_3_histology", "patient.icd_o_3_site", "patient.inherited_genetic_syndrome_found", "patient.karnofsky_performance_score", "patient.laterality", "patient.mental_status_changes", "patient.mold_or_dust_allergy_history", "patient.motor_movement_changes", "patient.neoplasm_histologic_grade", "patient.prior_glioma", "patient.race_list.race", "patient.seizure_history", "patient.sensory_changes", "patient.supratentorial_localization", "patient.targeted_molecular_therapy","patient.tumor_location", "patient.visual_changes", 
+"patient.vital_status", "patient.tumor_samples.tumor_sample.tumor_histologies.tumor_histology.histological_type", "patient.tumor_samples.tumor_sample.tumor_necrosis_percent", "patient.tumor_samples.tumor_sample.tumor_nuclei_percent", "patient.samples.sample.portions.portion.slides.slide.percent_lymphocyte_infiltration", "patient.samples.sample.portions.portion.slides.slide.percent_monocyte_infiltration", "patient.samples.sample.portions.portion.slides.slide.percent_necrosis", "patient.samples.sample.portions.portion.slides.slide.percent_neutrophil_infiltration", "patient.samples.sample.portions.portion.slides.slide.percent_normal_cells", "patient.samples.sample.portions.portion.slides.slide.percent_stromal_cells", "patient.samples.sample.portions.portion.slides.slide.percent_tumor_cells", "patient.samples.sample.portions.portion.slides.slide.percent_tumor_nuclei")
+x = x[!duplicated(x)]
+clin = clin[,x]
+```
+
+```{r}
+colnames(clin)= gsub("admin.", "patient.", colnames(clin))
+colnames(clin)= gsub("patient.", "", colnames(clin))
+colnames(clin)= gsub("tumor_samples.tumor_sample.", "", colnames(clin))
+colnames(clin)= gsub("tumor_histologies.tumor_histology.histological_type", "pathology", colnames(clin))
+colnames(clin)= gsub("samples.sample.portions.portion.slides.slide.percent_", "path_perc_", colnames(clin))
+#colnames(clin)
+```
+
+```{r}
+x = as.character(clin$histological_type)
+x[x=="untreated primary (de novo) gbm"] = "glioblastoma"
+x[x=="treated primary gbm"] = "glioblastoma"
+x[x=="glioblastoma multiforme (gbm)"] = "glioblastoma"
+clin = clin[,!colnames(clin)=="histological_type"]
+clin$histological_type = as.factor(x)
+```
+
+```{r}
+x=as.character(clin$neoplasm_histologic_grade)
+x[clin$histological_type=="glioblastoma"]="g4"
+clin = clin[,!colnames(clin)=="neoplasm_histologic_grade"]
+clin$neoplasm_histologic_grade = as.factor(x)
+```
+
+```{r}
+#from the cell
+setwd(paste0(wd, "/dt"))
+subt = read.csv("subtypes.csv", header=T)
+```
+
+```{r}
+rownames(subt) = tolower(subt$Case)
+
+cli = cbind(clin, subt[match(rownames(clin), rownames(subt)),c(1,21:51)])
+```
+
+```{r}
+dnc = c(dnc, "cli")
+```
+
+```{r}
+'#RPPA downloaded from firehose
+setwd(paste0(wd, "/dt"))
+prot = read.table("GBMLGG.protein.txt", sep="\t", header=TRUE)
+
+prot = prot[-1,]
+rownames(prot)=prot$Sample.REF
+prot = prot[,-1]
+colnames(prot) = tolower(gsub("/.", "/-", colnames(prot)))
+for (el in colnames(prot)){
+  prot[,el]=as.numeric(as.character(prot[,el]))
+}
+dnc = c(dnc, "prot")'
+```
+
+
+
+```{r}
+'
+#TCGA designed package
+tcga_load(study = "LGG")
+tcga_load(study = "GBM")
+#tcga_gbm_mc3@data$t_depth = NA
+#tcga_gbm_mc3@data = as.data.table(as.data.frame(tcga_gbm_mc3@data)[,!colnames(tcga_gbm_mc3@data)=="t_vaf"])
+#tcga_gbm_mc3@maf.silent = as.data.table(as.data.frame(tcga_gbm_mc3@maf.silent)[,!colnames(tcga_gbm_mc3@maf.silent)=="t_vaf"])
+
+maf = tcga_lgg_mc3
+maf@data = rbind(tcga_lgg_mc3@data, tcga_gbm_mc3@data)
+maf@variants.per.sample = rbind(tcga_lgg_mc3@variants.per.sample, tcga_gbm_mc3@variants.per.sample, fill=T)
+maf@variant.classification.summary = rbind(tcga_lgg_mc3@variant.classification.summary, tcga_gbm_mc3@variant.classification.summary)
+
+x = colnames(maf@gene.summary)
+mafM=as.matrix(maf@gene.summary[,-1])
+rownames(mafM)=maf@gene.summary$Hugo_Symbol
+gbmM=as.matrix(tcga_gbm_mc3@gene.summary[,-1])
+rownames(gbmM)=tcga_gbm_mc3@gene.summary$Hugo_Symbol
+com = gbmM[match(rownames(mafM), rownames(gbmM)),]
+com[is.na(com)]=0
+com= mafM + com
+for (el in rownames(gbmM)){
+  if(sum(rownames(com)==el)>0){
+    gbmM = gbmM[!rownames(gbmM)==el,]
+  }
+}
+com = rbind(com, gbmM)
+com = as.data.frame(com)
+com$Hugo_Symbol = rownames(com)
+com[order(com$total, decreasing = T),]
+com = com[,x]
+com = data.table(com)
+maf@gene.summary = com
+
+
+tcga_gbm_mc3@maf.silent$t_depth = NA
+tcga_gbm_mc3@maf.silent$t_vaf = NA
+maf@maf.silent = rbind(tcga_lgg_mc3@maf.silent, tcga_gbm_mc3@maf.silent, fill=T)
+
+dim(tcga_lgg_mc3@clinical.data)
+dim(tcga_gbm_mc3@clinical.data)
+
+for (el in colnames(tcga_lgg_mc3@clinical.data)){
+  if(sum(colnames(tcga_gbm_mc3@clinical.data)==el)<1){
+    x = as.data.frame(matrix(NA, ncol = 1, nrow = dim(tcga_gbm_mc3@clinical.data)[1]))
+    colnames(x)=el
+    tcga_gbm_mc3@clinical.data=cbind(tcga_gbm_mc3@clinical.data, x)
+  }
+}
+dim(tcga_lgg_mc3@clinical.data)
+dim(tcga_gbm_mc3@clinical.data)
+
+for (el in colnames(tcga_gbm_mc3@clinical.data)){
+  if(sum(colnames(tcga_lgg_mc3@clinical.data)==el)<1){
+    x = as.data.frame(matrix(NA, ncol = 1, nrow = dim(tcga_lgg_mc3@clinical.data)[1]))
+    colnames(x)=el
+    tcga_lgg_mc3@clinical.data=cbind(tcga_lgg_mc3@clinical.data, x)
+  }
+}
+x = as.data.frame(tcga_gbm_mc3@clinical.data)
+maf@clinical.data = rbind(tcga_lgg_mc3@clinical.data, x[,match(colnames(tcga_lgg_mc3@clinical.data), colnames(tcga_gbm_mc3@clinical.data))])
+
+maf@summary$summary[3]=dim(maf@variants.per.sample)[1]
+maf@summary$summary[5:13]=colSums(maf@gene.summary[,2:10])
+maf@summary$Mean[5:13]=colMeans(maf@gene.summary[,2:10])
+maf@summary$Median[5:13]=rowMedians(flip(maf@gene.summary[,2:10]))
+maf@summary
+dnc = c(dnc, "maf")
+'
+```
+
+```{r}
+#downloaded from TCGA dataportal
+setwd(paste0(wd, "/dt/seq"))
+
+menu <- fromJSON(file="metadata.json")
+```
+
+```{r}
+dir = paste0(wd, "/dt/seq")
+prob = NULL
+el = 1
+folder = menu[[el]]$file_id
+file = menu[[el]]$file_name
+dir = paste(dir, folder, sep = "/")
+file = paste(dir, file, sep = "/")
+setwd(dir)
+m1 = read.table(file)
+Seq = matrix(m1$V2, nrow = 1)
+colnames(Seq) = m1$V1
+rn = menu[[el]]$associated_entities[[1]]$entity_submitter_id
+for (el in 2:(length(menu))){
+  dir = paste0(wd, "/dt/seq")
+  rn = c(rn, menu[[el]]$associated_entities[[1]]$entity_submitter_id)
+  folder = menu[[el]]$file_id
+  file = menu[[el]]$file_name
+  dir = paste(dir, folder, sep = "/")
+  file = paste(dir, file, sep = "/")
+  setwd(dir)
+  m1 = read.table(file)
+  nSeq = matrix(m1$V2, nrow = 1)
+  Seq = rbind(Seq, nSeq)
+  if(sum(!colnames(Seq) == m1$V1)){
+    prob =c(prob, menu[[el]]$associated_entities[[1]]$entity_submitter_id)
+  }
+}
+rownames(Seq) = rn
+
+```
+
+
+```{r}
+fSeq = flip(Seq)
+seq = as.data.frame(Seq)
+```
+
+```{r}
+dnc = c(dnc, "seq", "Seq", "fSeq")
+```
+
+```{r}
+
+LGGFIRE <- getFirehoseData(dataset="GBMLGG", runDate="20160128", RNASeqGene = FALSE, clinical = TRUE, miRNASeqGene = FALSE,   RNASeq2GeneNorm = FALSE, CNASNP = FALSE, CNVSNP = FALSE, CNASeq = FALSE, CNACGH = FALSE, Methylation = FALSE, Mutation = FALSE, mRNAArray = FALSE, miRNAArray = FALSE, RPPAArray = FALSE)
+```
+
+```{r}
+x = LGGFIRE@clinical
+```
+
+
+
+```{r}
+rownames(x) = gsub("\\.", "-", rownames(x))
+```
+
+
+```{r}
+cli$vital_status = x[match(rownames(x), rownames(cli)),]$vital_status
+vs = as.character(cli$vital_status)
+vs[vs=="1"]="dead"
+vs[vs=="0"]="alive"
+cli$vital_status=vs
+cli$days_to_last_followup = x[match(rownames(x), rownames(cli)),]$days_to_last_followup
+cli$days_to_death = x[match(rownames(x), rownames(cli)),]$days_to_death
+```
+
+```{r}
+for(el in c("age_at_initial_pathologic_diagnosis", "days_to_birth", "days_to_death", "days_to_initial_pathologic_diagnosis", "days_to_last_followup", "tumor_necrosis_percent", "tumor_nuclei_percent", "path_perc_lymphocyte_infiltration", "path_perc_monocyte_infiltration", "path_perc_necrosis","path_perc_neutrophil_infiltration", "path_perc_normal_cells", "path_perc_stromal_cells", "path_perc_tumor_cells", "path_perc_tumor_nuclei", "karnofsky_performance_score")){
+  cli[,el] = as.numeric(as.character(cli[,el]))
+}
+
+```
+
+```{r}
+SO = rep(-100, length(cli$vital_status))
+cli$vital_status[is.na(cli$vital_status)] = "alive" 
+SO[cli$vital_status=="alive"] = cli$days_to_last_followup[cli$vital_status=="alive"]
+SO[cli$vital_status=="dead"] = cli$days_to_death[cli$vital_status=="dead"]
+SO[is.na(SO)] = 0
+cli$SO = SO/365.25
+cli$surv = with(cli, Surv(SO, vital_status == "dead"))
+```
+
+
+
+
+```{r}
+mart <- useMart("ENSEMBL_MART_ENSEMBL", host = "uswest.ensembl.org")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=mart)
+trl = getBM(attributes=c("ensembl_gene_id","hgnc_symbol", "entrezgene", "start_position", "end_position", "chromosome_name", "strand"), mart= ensembl)
+trl$chromosome_name[nchar(trl$chromosome_name)>3] = gsub("_", "", substr(trl$chromosome_name[nchar(trl$chromosome_name)>3], 10, 11))
+```
+
+```{r}
+fhseq = fSeq[,!is.na(cli[tolower(substr(colnames(fSeq), 1, 12)),]$seizure_history)]
+dim(fhseq)
+fhseq=fhseq[,TCGAsampleSelect(as.character(colnames(fhseq)), "01")]
+dim(fhseq)
+
+rn = rownames(fhseq)
+for (el in 1:length(rn)){
+  nn = trl[trl$ensembl_gene_id==substr(rn[el], 1, 15),]$hgnc_symbol
+  nn = nn[!is.na(nn)]
+  nn = nn[!(nn=="")]
+  if(length(nn)==0){
+    rn[el] = "drop!"
+  } else {
+    rn[el]=nn[1]
+  }
+}
+#rn[c(1:10, 100, 1000, 10000)]
+
+rownames(fhseq)=rn
+fhseq = fhseq[!(rownames(fhseq)=="drop!"),]
+dim(fhseq)
+#fhseq[1:10,1:10]
+
+nm = NULL
+dim(fhseq)
+for (el in unique(rownames(fhseq)[duplicated(rownames(fhseq))])){
+  M = fhseq[rownames(fhseq)==el,]
+  M = M[(1:nrow(M))[rowMeans(M)==max(rowMeans(M))][1],]
+  M = matrix(M, nrow=1)
+  rownames(M)=el
+  colnames(M)=colnames(fhseq)
+  fhseq = fhseq[!rownames(fhseq)==el,]
+  nm = rbind(M,nm)
+}
+fhseq = rbind(nm, fhseq)
+dim(fhseq)
+#fnseq[rownames(fnseq)=="26628",]
+dnc=c(dnc, "fhseq", "trl")
+```
+
+```{r}
+Fhseq=fSeq[,TCGAsampleSelect(as.character(colnames(fSeq)), "01")]
+dim(Fhseq)
+
+rn = rownames(Fhseq)
+for (el in 1:length(rn)){
+  nn = trl[trl$ensembl_gene_id==substr(rn[el], 1, 15),]$hgnc_symbol
+  nn = nn[!is.na(nn)]
+  nn = nn[!(nn=="")]
+  if(length(nn)==0){
+    rn[el] = "drop!"
+  } else {
+    rn[el]=nn[1]
+  }
+}
+#rn[c(1:10, 100, 1000, 10000)]
+
+rownames(Fhseq)=rn
+Fhseq = Fhseq[!(rownames(Fhseq)=="drop!"),]
+dim(Fhseq)
+#Fhseq[1:10,1:10]
+
+nm = NULL
+dim(Fhseq)
+for (el in unique(rownames(Fhseq)[duplicated(rownames(Fhseq))])){
+  M = Fhseq[rownames(Fhseq)==el,]
+  M = M[(1:nrow(M))[rowMeans(M)==max(rowMeans(M))][1],]
+  M = matrix(M, nrow=1)
+  rownames(M)=el
+  colnames(M)=colnames(Fhseq)
+  Fhseq = Fhseq[!rownames(Fhseq)==el,]
+  nm = rbind(M,nm)
+}
+Fhseq = rbind(nm, Fhseq)
+dim(Fhseq)
+
+dnc=c(dnc, "Fhseq")
+```
+
+```{r}
+del = ls()
+for (el in dnc){
+  del = del[!del==el]
+}
+for (el in c(del, "dnc", "del")){
+  rm(list=el)
+} 
+```
+
+```{r}
+'setwd(paste0(wd, "/dt"))
+mir = as.data.frame(read.table("mir.txt", sep="\t", header=TRUE))
+rownames(mir) = mir$Hybridization.REF
+#mir = mir[,!colnames(mir)=="Hybridization.REF"]
+mir=mir[,mir[1,]=="reads_per_million_miRNA_mapped"]
+
+mir = mir[!rownames(mir)=="miRNA_ID",]
+
+x=rownames(mir)
+mir = apply(mir,2,as.numeric)
+rownames(mir)=x
+
+mir = mir[!rowMin(mir)==0,]
+
+x=rownames(mir)
+mir = apply(mir,2,log2)
+x=rownames(mir)
+
+
+#mir = as.data.frame(mir)
+#mir[mir==-Inf] = min(mir[mir>-Inf])-0.1
+#mir = as.matrix(mir)
+
+
+
+dim(mir)
+mir = mir[,TCGAsampleSelect(as.character(gsub("/.", "-", colnames(mir))), "01")]
+dim(mir)'
+```
+
+```{r}
+setwd("D:/Files/Main_directory/Nencki/Epi/dt")
+save.image("all.RData")
+```
+
+```{r}
+setwd("D:/Files/Main_directory/Nencki/Epilepsy_2020/dt")
+load("all.RData")
+```
+```{r}
+fSeq[1:10,1:10]
+```
+```{r}
+counts = fSeq
+counts = counts[,TCGAutils::TCGAsampleSelect(colnames(counts), "01")]
+counts = counts[,!duplicated(substr(colnames(counts),1,12))]
+colnames(counts) = tolower(substr(colnames(counts), 1, 12))
+```
+
+```{r}
+#cd = as.data.frame(cli)
+cd
+```
+```{r}
+rm(list = setdiff(ls(), c("counts", "flip", "cd")))
+```
+
+```{r}
+setwd("C:/Users/szbal/Desktop/fundusz21_22")
+save.image("kfnrzd.RData")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

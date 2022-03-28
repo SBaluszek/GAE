@@ -1,0 +1,1459 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+rm(list = ls())
+gc()
+```
+
+
+```{r}
+library(ggplot2)
+library(survminer)
+library(survival)
+library(msigdbr)
+library(fgsea)
+library(limma)
+library(ComplexHeatmap)
+library(circlize)
+library(GSEAlm)
+library(ggpubr)
+```
+
+```{r}
+dropNA = function(x){
+  x = x[!is.na(x)]
+  return(x)
+}
+
+flip <- function(x){
+  x = as.matrix(x)
+  y = t(apply(x, 2, rev))
+  rownames(y)=colnames(x)
+  colnames(y)=rev(rownames(x))
+  return (y)
+}
+```
+
+```{r}
+
+wd = getwd()
+setwd(paste0(wd, "/dt"))
+x = ls()
+load("all.rdata")
+cli$location = ifelse(cli$tumor_location=="supratentorial, temporal lobe", "Temporal", "Other")
+
+cli$localization = ifelse(grepl("posterior fossa", tolower(cli$tumor_location)), "Other", ifelse(cli$supratentorial_localization=="cerebral cortex", "Cortical", ifelse(cli$supratentorial_localization=="not listed in medical record", NA, "Other")))
+rm(list = ls()[!(ls() %in% c(x, "cli"))])
+```
+```{r}
+wd = getwd()
+setwd(paste0(wd, "/dt"))
+load("res_epi.rdata")
+load("nexp_epi.Rdata")
+load("nexp_age.Rdata")
+```
+```{r}
+#Prerequisites
+```
+
+
+```{r}
+fig1s_gsea = list()
+```
+
+
+
+```{r}
+reactome = msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CP:REACTOME")
+reactome = reactome %>% split(x = .$gene_symbol, f = .$gs_name)
+
+names(reactome) = gsub("REACTOME_", "", names(reactome))
+names(reactome) = gsub("_", " ", names(reactome))
+```
+
+
+```{r}
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$hgnc)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+
+reactome_fgsea <- fgseaMultilevel(pathways = reactome, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000)
+
+reactome_fgsea[order(reactome_fgsea$NES, decreasing = T),]
+reactome_fgsea[order(reactome_fgsea$NES, decreasing = F),]
+```
+
+```{r}
+p = plotGseaTable(pathways = reactome[c(reactome_fgsea[order(reactome_fgsea$NES, decreasing = T)[1:10],]$pathway, reactome_fgsea[rev(order(reactome_fgsea$NES, decreasing = F)[1:10]),]$pathway)],
+              stats = Q,
+              fgseaRes = reactome_fgsea, render = F, gseaParam = 0.5, colwidths = c(6,2,1,0,1.5))
+p$grobs[[1]]$label = "Reactome term"
+
+for(X in 1+4*(1:20)){
+  el = p$grobs[[X]]$label
+  if(nchar(el)<25){
+    p$grobs[[X]]$label = el
+  } else {
+    x = unlist(lapply(strsplit(el, ''), function(x) which(x == ' ')))[which.min(abs(unlist(lapply(strsplit(el, ''), function(x) which(x == ' '))) - (nchar(el)/2)))]
+    el = paste(substr(el, 1, x-1), substr(el, x+1, nchar(el)), sep = "\n")
+    p$grobs[[X]]$label = el
+  }
+  print(p$grobs[[X]]$label)
+}
+
+fig1s_gsea[["resctome"]] = p
+```
+
+
+```{r}
+go = msigdbr(species = "Homo sapiens", category = "C5")
+go = go %>% split(x = .$gene_symbol, f = .$gs_name)
+
+names(go) = gsub("GO_", "", names(go))
+names(go) = gsub("_", " ", names(go))
+```
+
+
+```{r}
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$hgnc)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+
+go_fgsea <- fgseaMultilevel(pathways = go, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000)
+
+go_fgsea[order(go_fgsea$NES, decreasing = T),]
+go_fgsea[order(go_fgsea$NES, decreasing = F),]
+```
+
+```{r}
+p = plotGseaTable(pathways = go[c(go_fgsea[order(go_fgsea$NES, decreasing = T)[1:10],]$pathway, go_fgsea[rev(order(go_fgsea$NES, decreasing = F)[1:10]),]$pathway)],
+              stats = Q,
+              fgseaRes = go_fgsea, render = F, gseaParam = 0.5, colwidths = c(6,2,1,0,1.5))
+p$grobs[[1]]$label = "Gene Ontology term"
+
+for(X in 1+4*(1:20)){
+  el = p$grobs[[X]]$label
+  if(nchar(el)<25){
+    p$grobs[[X]]$label = el
+  } else {
+    if(nchar(el)>55){
+      el = paste0(substr(el, 1, 52), "...")
+    }
+    x = unlist(lapply(strsplit(el, ''), function(x) which(x == ' ')))[which.min(abs(unlist(lapply(strsplit(el, ''), function(x) which(x == ' '))) - (nchar(el)/2)))]
+    el = paste(substr(el, 1, x-1), substr(el, x+1, nchar(el)), sep = "\n")
+    p$grobs[[X]]$label = el
+  }
+  print(p$grobs[[X]]$label)
+}
+
+fig1s_gsea[["go"]] = p
+```
+
+```{r}
+c2 = msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CGP")
+c2 = c2 %>% split(x = .$gene_symbol, f = .$gs_name)
+
+names(c2) = gsub("_", " ", names(c2))
+
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$hgnc)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+
+c2_fgsea <- fgseaMultilevel(pathways = c2, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=10000)
+```
+
+```{r}
+p = plotGseaTable(pathways = c2[c(c2_fgsea[order(c2_fgsea$NES, decreasing = T)[1:10],]$pathway, c2_fgsea[rev(order(c2_fgsea$NES, decreasing = F)[1:10]),]$pathway)],
+              stats = Q,
+              fgseaRes = c2_fgsea, render = F, gseaParam = 0.5, colwidths = c(6,2,1,0,1.5))
+p$grobs[[1]]$label = "MsigDB C2 term"
+
+for(X in 1+4*(1:20)){
+  el = p$grobs[[X]]$label
+  if(nchar(el)<25){
+    p$grobs[[X]]$label = el
+  } else {
+    if(nchar(el)>55){
+      el = paste0(substr(el, 1, 52), "...")
+    }
+    x = unlist(lapply(strsplit(el, ''), function(x) which(x == ' ')))[which.min(abs(unlist(lapply(strsplit(el, ''), function(x) which(x == ' '))) - (nchar(el)/2)))]
+    el = paste(substr(el, 1, x-1), substr(el, x+1, nchar(el)), sep = "\n")
+    p$grobs[[X]]$label = el
+  }
+}
+
+fig1s_gsea[["c2"]] = p
+```
+
+
+```{r}
+setwd(paste0(wd, "/Figures/Supplementary"))
+ggsave(filename = "fig1s_gsea.png", ggarrange(plotlist = fig1s_gsea, nrow = 1), width = 18, height = 12)
+save(fig1s_gsea, file = "fig1s_gsea.Rdata")
+```
+
+```{r}
+### AEDs start here
+```
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+dsigdb = gmtPathways("dsigdb_D1.gmt")
+```
+
+```{r}
+dsigdb = lapply(dsigdb, function(x){x = intersect(x, res$hgnc)})
+dsigdb = dsigdb[sapply(dsigdb, length)>0]
+```
+
+
+```{r}
+library(xlsx)
+setwd(paste0(wd, "/dt"))
+aed = read.xlsx("AED.xlsx", sheetName = "Sheet1")
+```
+
+```{r}
+names(dsigdb) = tolower(names(dsigdb))
+```
+
+
+
+
+
+```{r}
+dsigdb = dsigdb[tolower(names(dsigdb)) %in% tolower(aed$Pharmaceutical)]
+```
+
+
+
+
+```{r}
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$hgnc)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+
+dsigdb_fgsea <- fgseaMultilevel(pathways = dsigdb, 
+                  stats = Q,
+                  minSize=4,
+                  maxSize=10000)
+
+dsigdb_fgsea[order(dsigdb_fgsea$NES, decreasing = T),]
+dsigdb_fgsea[order(dsigdb_fgsea$NES, decreasing = F),]
+```
+
+```{r}
+a = matrix(0, nrow = length(names(dsigdb)), ncol = length(intersect(unique(unlist(dsigdb)), rownames(nexp))), dimnames = list(c = names(dsigdb), r = intersect(unique(unlist(dsigdb)), rownames(nexp))))
+dsigdb = lapply(dsigdb, intersect, y = colnames(a))
+
+for(el in 1:length(dsigdb)){
+  a[el, dsigdb[[el]]] = 1
+}
+
+a = a[rowSums(a)>0, colSums(a)>0]
+
+a[1:10,1:10]
+```
+
+
+
+```{r}
+library(GSEAlm)
+gsealm_dsigdb = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+```
+
+```{r}
+x = cli[substr(tolower(colnames(gsealm_dsigdb)),1,12),"seizure_history"]
+dsigdb_res = as.data.frame(flip(apply(gsealm_dsigdb, 1, function(X){
+  #print(cli[substr(tolower(names(X)),1,12),"seizure_history"])
+  unlist(wilcox.test(gs~epi, data.frame(epi = x, gs = X), conf.int = T)[c("estimate", "p.value")])
+})))
+dsigdb_res$p.adjusted = p.adjust(dsigdb_res$p.value, method = "BH")
+dsigdb_res$effect = (rowMedians(gsealm_dsigdb[,cli[substr(tolower(colnames(gsealm_dsigdb)),1,12),"seizure_history"]=="yes"], na.rm = T) - rowMedians(gsealm_dsigdb[,cli[substr(tolower(colnames(gsealm_dsigdb)),1,12),"seizure_history"]=="no"], na.rm = T))
+dsigdb_res = dsigdb_res[order(dsigdb_res$effect, decreasing = T),]
+dsigdb_res = cbind(dsigdb_res, dsigdb_fgsea[match(rownames(dsigdb_res), dsigdb_fgsea$pathway),])
+dsigdb_res$aed = aed[match(rownames(dsigdb_res), gsub("\\.", "-", tolower(aed$Pharmaceutical))),"Family"]
+dsigdb_res$sel = (!duplicated(dsigdb_res$aed)) | (dsigdb_res$p.adjusted<0.05 & (!is.na(dsigdb_res$p.adjusted))) | (dsigdb_res$padj<0.05 & !is.na(dsigdb_res$padj))
+dsigdb_res = dsigdb_res[order(pmin(dsigdb_res$p.adjusted, dsigdb_res$padj, na.rm = T)),] 
+dsigdb_res[dsigdb_res$sel,]
+```
+
+
+
+
+
+
+
+```{r}
+a = matrix(0, nrow = 2, ncol = length(rownames(res[!res$gr=="nc",])), dimnames = list(r = c("Upregulated", "Downregulated"), c = rownames(res[!res$gr=="nc",])))
+a["Upregulated",res$hgnc[res$gr=="Upregulated"]] = 1
+a["Downregulated",res$hgnc[res$gr=="Downregulated"]] = 1
+a = a[,intersect(rownames(Nexp), colnames(a))]
+A = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+
+x = A["Upregulated",]-A["Downregulated",]
+cli$Epi_score = NA
+cli[tolower(substr(names(x),1,12)),"Epi_score"] = x
+
+dsigdb_res = as.data.frame(dsigdb_res)
+X = gsealm_dsigdb[rownames(dsigdb_res[dsigdb_res$sel,]),]
+
+X = flip(normalizeQuantiles(flip(X)))
+X = X[rev(rownames(X)),order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]
+```
+
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+library(xlsx)
+drh = read.xlsx("repurposing_drugs_20200324.xlsx", sheetName = "repurposing_drugs_20200324")
+drh = drh[!is.na(drh$target),]
+```
+
+
+```{r}
+drh = setNames(strsplit(drh$target, "\\|"), drh$pert_iname)
+drh = lapply(drh, function(x){x = intersect(x, res$hgnc)})
+drh = drh[sapply(drh, length)>0]
+names(drh) = tolower(gsub("\\-", " ", names(drh)))
+```
+
+
+
+
+```{r}
+setwd(paste0(wd, "/dt"))
+aed = read.xlsx("AED.xlsx", sheetName = "Sheet1")
+```
+```{r}
+drh = drh[tolower(gsub(" ", "-", names(drh))) %in% tolower(aed$Pharmaceutical)]
+```
+
+
+
+```{r}
+x = unique(unlist(drh))
+x = res[x,]
+x = x[order(abs(x$stat), decreasing = T),]
+x
+```
+
+
+
+
+
+
+```{r}
+Q = setNames(res$log2FoldChange, res$hgnc)
+Q = Q[!is.na(res$hgnc)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+
+drh_fgsea <- fgseaMultilevel(pathways = drh, 
+                  stats = Q,
+                  minSize=4,
+                  maxSize=10000)
+
+drh_fgsea[order(drh_fgsea$NES, decreasing = T),]
+drh_fgsea[order(drh_fgsea$NES, decreasing = F),]
+```
+
+```{r}
+a = matrix(0, nrow = length(names(drh)), ncol = length(intersect(unique(unlist(drh)), rownames(nexp))), dimnames = list(c = names(drh), r = intersect(unique(unlist(drh)), rownames(nexp))))
+drh = lapply(drh, intersect, y = colnames(a))
+
+for(el in 1:length(drh)){
+  a[el, drh[[el]]] = 1
+}
+
+a = a[rowSums(a)>0, colSums(a)>0]
+
+a[1:10,1:10]
+```
+
+
+
+```{r}
+library(GSEAlm)
+gsealm_drh = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+```
+
+```{r}
+x = cli[substr(tolower(colnames(gsealm_drh)),1,12),"seizure_history"]
+drh_res = as.data.frame(flip(apply(gsealm_drh, 1, function(X){
+  #print(cli[substr(tolower(names(X)),1,12),"seizure_history"])
+  unlist(wilcox.test(gs~epi, data.frame(epi = x, gs = X), conf.int = T)[c("estimate", "p.value")])
+})))
+drh_res$p.adjusted = p.adjust(drh_res$p.value, method = "BH")
+drh_res$effect = (rowMedians(gsealm_drh[,cli[substr(tolower(colnames(gsealm_drh)),1,12),"seizure_history"]=="yes"], na.rm = T) - rowMedians(gsealm_drh[,cli[substr(tolower(colnames(gsealm_drh)),1,12),"seizure_history"]=="no"], na.rm = T))
+drh_res = drh_res[order(drh_res$effect, decreasing = T),]
+drh_res = cbind(drh_res, drh_fgsea[match(rownames(drh_res), drh_fgsea$pathway),])
+drh_res$aed = aed[match(rownames(drh_res), gsub("\\.", "-", tolower(aed$Pharmaceutical))),"Family"]
+drh_res$sel = (!duplicated(drh_res$aed)) | (drh_res$p.adjusted<0.05 & (!is.na(drh_res$p.adjusted))) | (drh_res$padj<0.05 & !is.na(drh_res$padj))
+drh_res["acetazolamide", "sel"] = T
+drh_res = drh_res[order(pmin(drh_res$p.adjusted, drh_res$padj, na.rm = T)),] 
+drh_res[drh_res$sel,]
+```
+
+
+
+
+```{r}
+a = matrix(0, nrow = 2, ncol = length(rownames(res[!res$gr=="nc",])), dimnames = list(r = c("Upregulated", "Downregulated"), c = rownames(res[!res$gr=="nc",])))
+a["Upregulated",res$hgnc[res$gr=="Upregulated"]] = 1
+a["Downregulated",res$hgnc[res$gr=="Downregulated"]] = 1
+a = a[,intersect(rownames(Nexp), colnames(a))]
+A = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+
+x = A["Upregulated",]-A["Downregulated",]
+cli$Epi_score = NA
+cli[tolower(substr(names(x),1,12)),"Epi_score"] = x
+
+drh_res = as.data.frame(drh_res)
+X = gsealm_drh[rownames(drh_res[drh_res$sel,]),]
+
+X = flip(normalizeQuantiles(flip(X)))
+X = X[rev(rownames(X)),order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]
+```
+
+```{r}
+my_aeds = unique(c("pregabalin", "metharbital", "zonisamide", "felbamate", "clobazam", "topiramate", "acetazolamide", "felbamate", "levetiracetam", "retigabine", "pyridoxal", "carbamazepine", "perampanel", "vigabatrin", "tiagabine", "valproic acid"))
+```
+
+```{r}
+my_aeds = my_aeds[order(rowMeans(gsealm_drh[my_aeds,(!is.na(cli[substr(tolower(colnames(gsealm_drh)),1,12),"IDH.status"])) & (cli[substr(tolower(colnames(gsealm_drh)),1,12),"IDH.status"] == "Mutant")]) - rowMeans(gsealm_drh[my_aeds,(!is.na(cli[substr(tolower(colnames(gsealm_drh)),1,12),"IDH.status"])) & (cli[substr(tolower(colnames(gsealm_drh)),1,12),"IDH.status"] == "WT")]), decreasing = T)]
+
+setwd(paste0(wd, "/dt"))
+save(my_aeds, file = "myaeds.Rdata")
+```
+
+
+```{r}
+drh_res$sel = rownames(drh_res) %in% my_aeds
+
+a = matrix(0, nrow = 2, ncol = length(rownames(res[!res$gr=="nc",])), dimnames = list(r = c("Upregulated", "Downregulated"), c = rownames(res[!res$gr=="nc",])))
+a["Upregulated",res$hgnc[res$gr=="Upregulated"]] = 1
+a["Downregulated",res$hgnc[res$gr=="Downregulated"]] = 1
+a = a[,intersect(rownames(Nexp), colnames(a))]
+A = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+
+x = A["Upregulated",]-A["Downregulated",]
+cli$Epi_score = NA
+cli[tolower(substr(names(x),1,12)),"Epi_score"] = x
+
+X = gsealm_drh[my_aeds,]
+
+X = flip(normalizeQuantiles(flip(X)))
+X = X[my_aeds,order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]
+
+#X = X - rowMin(X)
+#X = X/(rowMax(X) - rowMin(X))
+
+'X = X[c(drh_fgsea[order(drh_fgsea$NES, decreasing = T)[1:10],]$pathway, drh_fgsea[rev(order(drh_fgsea$NES, decreasing = F)[1:10]),]$pathway),
+         order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]'
+
+rownames(X) = sapply(rownames(X), function(el){
+  if(nchar(el)<25){
+    return(el)
+  } else {
+    x = unlist(lapply(strsplit(el, ''), function(x) which(x == ' ')))[which.min(abs(unlist(lapply(strsplit(el, ''), function(x) which(x == ' '))) - (nchar(el)/2)))]
+    el = paste(substr(el, 1, x-1), substr(el, x+1, nchar(el)), sep = "\n")
+    return(el)
+  }
+})
+
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "Cod1p19q", "Location", "Grade", "Histology")
+
+col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+           `Seizures` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green", "glioblastoma" = "purple"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink", "g4" = "purple"))
+
+x = x[,c("IDH", "Cod1p19q", "Histology", "Grade", "Age", "Location")]
+
+ha = HeatmapAnnotation(IDH = x$IDH, Cod1p19q = x$Cod1p19q, Histology = x$Histology, Grade = x$Grade, Location = x$Location, Age = x$Age, col=col, annotation_name_gp = gpar(fontsize = 9),  annotation_legend_param = list(
+  Age = list(direction = "horizontal"),
+  IDH = list(nrow = 2),
+  Cod1p19q = list(nrow = 2),
+  Histology = list(nrow = 2),
+  Grade= list(nrow = 2),
+  Location= list(nrow = 2)))
+
+drh_res$fgsea = -log10(drh_res$padj)
+drh_res$fgsea[is.na(drh_res$fgsea)] = 0
+drh_res$GSEAlm = -log10(drh_res$p.adjusted)
+drh_res$GSEAlm[is.na(drh_res$GSEAlm)] = 0
+
+pvalue_col_fun = colorRamp2(breaks = -log10(c(1, 0.1 +1e-15, 0.1, 0.05 + 1e-15, 0.05, 0.01, 0.001, 1e-4, 1e-15)),
+                     colors = c("white", "white", "yellow", rev((hcl.colors(5, palette = "Viridis"))[c(1,2,3,4,5)]), "black"))
+
+col = list(fgsea = pvalue_col_fun,
+           GSEAlm = pvalue_col_fun)
+
+
+ra = rowAnnotation(df = drh_res[rownames(X),c("fgsea", "GSEAlm")], name = c("fgsea", "GSEAlm"), col = col, show_legend = F, annotation_name_side = "top")
+
+ha = Heatmap(matrix = X,
+             row_order = my_aeds,
+        top_annotation = ha,
+        left_annotation = ra,
+        column_split = factor(gsub("_", "", gsub("NA_", "unknown", paste0(cli[substr(tolower(colnames(X)),1,12),"seizure_history"], "_"))), levels = c("yes", "no", "unknown")),
+        column_title = c("Positive seizure history", "Negative seizure history", "Unknown seizure history"),
+        cluster_column_slices = F,
+        row_names_gp = gpar(fontsize = 11),
+        cluster_columns = T,
+        cluster_rows = F,
+        show_row_names = T,
+        show_column_names = F,
+        show_column_dend = F,
+        clustering_distance_columns = "minkowski",
+        clustering_method_columns = "ward.D",
+        #column_title = "Heatmap of differently expressed genes",
+        name = "GSEAlm-normalized signature",
+        heatmap_legend_param = list(legend_direction = "horizontal", legend_width = unit(2, "in")),
+        col = colorRamp2(breaks = c(quantile(X[X<median(X)]),  median(X), quantile(X[X>median(X)])),
+                         colors = c(hcl.colors(5, palette = "PuBu"), "white", rev(hcl.colors(5, palette = "YlOrRd")))))
+
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = pvalue_col_fun, -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4)), direction = "horizontal",  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001), legend_width = unit(2, "in"))
+
+draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T)
+```
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+
+png(file="fig4_aedhm_drh.png", width = 9, height = 8, units = "in", res = 400)
+draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T, heatmap_legend_side = "bottom", annotation_legend_side = "bottom",  column_title = "Expression of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"))
+dev.off()
+```
+
+
+
+```{r}
+
+
+fig4_aedhm_drh <-  grid.grabExpr(draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T, heatmap_legend_side = "bottom", annotation_legend_side = "bottom",  column_title = "Expression of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"))) # 
+
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedhm_drh, file = "fig4_aedhm_drh.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedhm_drh, filename = "fig4_aedhm_drh.png", width = 9, height = 8, dpi = 400)
+```
+```{r}
+
+x = c(,,,)
+```
+
+
+
+```{r}
+library(gtools)
+library(ggnewscale)
+
+x = combinations(length(my_aeds), 2, v=1:length(my_aeds), set=TRUE, repeats.allowed=FALSE)
+
+for(el in rev(rownames(drh))){
+  if(el %in% my_aeds){
+    my_aeds = c(el, my_aeds)
+  }
+}
+
+my_aeds = my_aeds[!duplicated(my_aeds)]
+
+df = data.frame(x = x[,1], y = x[,2])
+rownames(df) = paste(my_aeds[df$x], my_aeds[df$y], sep = "_")
+
+
+df = cbind(df, as.data.frame(flip(sapply(rownames(df), function(el){
+  unlist(cor.test(gsealm_drh[my_aeds[df[el,"x"]],],gsealm_drh[my_aeds[df[el,"y"]],])[c("p.value", "estimate")])
+}))[rownames(df),]))
+
+df$padj = p.adjust(df$p)
+df$p = -log10(df$padj + 1e-200)
+
+
+p = ggplot() +
+  geom_point(data = df, mapping = aes(x = x, y = - y, color = estimate.cor, size = sapply(p, function(el){min(el,4)}))) + theme_classic() +
+  scale_size(name =  "adjusted p-value", breaks = c(0, 1, 2, 3, 4), labels = c(1, 0.1, 0.01, 0.001, "\u2264 0.0001"), range = c(3,7), limits = c(0,4)) +
+  scale_color_gradientn(name = "Correlation\ncoefficient", lim = c(-1, 1), colors = c("blue4", "blue", "cyan", "gray80", "yellow", "red", "red4"))  + new_scale_colour() + new_scale("size")
+
+
+
+df = data.frame(y = df$x, x = df$y)
+rownames(df) = paste(my_aeds[df$x], my_aeds[df$y], sep = "_")
+
+df$com = sapply(rownames(df), function(el){
+  length(intersect(drh[[my_aeds[df[el,"x"]]]], drh[[my_aeds[df[el,"y"]]]]))
+})
+
+df$prop = sapply(rownames(df), function(el){
+  100*((df[el,"com"]/length(drh[[my_aeds[df[el,"x"]]]])) + (df[el,"com"]/length(drh[[my_aeds[df[el,"y"]]]]))) / 2
+})
+
+#df$s = 4*(log10(df$com + 1) - min(log10(df$com + 1)))/(max(log10(df$com + 1))-min(log10(df$com + 1)))
+
+p = p + geom_point(data = df, mapping = aes(x = x, y = -y, size = log10(com+1), colour = prop)) + 
+  scale_colour_gradientn(name = "Proportion of\ncommon targets", lim = c(0, 100), colours = c("white", "green", "forestgreen", "black")) + guides(size = guide_none()) +
+  scale_size(range = c(0,7)) +
+  scale_x_discrete(breaks = my_aeds[my_aeds %in% c(df$x, df$y)]) + scale_y_discrete(breaks = rev(my_aeds[my_aeds %in% c(df$y, df$x)])) + scale_x_continuous(breaks = 1:length(my_aeds), labels = my_aeds) + scale_y_continuous(breaks = 0 - (1:length(my_aeds)), labels = my_aeds) +
+  theme(legend.position = c("right"), legend.direction = "vertical", legend.box = "vertical", panel.border = element_rect(linetype = "solid", fill = NA), panel.grid.major = element_line(colour = "gray"), axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+  labs(x = "", y = "", title = "Correlation of AEDs signatures", subtitle = "Pearson's correlation")
+
+ggsave(p, filename = "t1.png", width = 10, height = 6, dpi = 400)
+```
+
+```{r}
+fig4_aedcm_drh <- p
+
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedcm_drh, file = "fig4_aedcm_drh.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedcm_drh, filename = "fig4_aedcm_drh.png", width = 10, height = 6, dpi = 400)
+```
+
+
+
+```{r}
+'X = gsealm_drh[rownames(drh_res[drh_res$sel,]),(cli[tolower(substr(colnames(gsealm_drh),1,12)),"seizure_history"]=="yes")&(!is.na(cli[tolower(substr(colnames(gsealm_drh),1,12)),"seizure_history"]))]
+x = flip(combn(rownames(X), m =2))
+colnames(x) = c("drug1", "drug2")
+#x
+
+x = as.data.frame(cbind(x,flip(apply(x, 1,function(el){
+  setNames(as.numeric(unlist(cor.test(X[el[1],], X[el[2],])[c("p.value", "estimate")])), c("p.value", "estimate"))}))))
+x$p.value = as.numeric(as.character(x$p.value))
+x$estimate = as.numeric(as.character(x$estimate))
+
+#x$p.value[x$p.value==0] = as.numeric(min(x$p.value[!x$p.value==0]))/(1e300)
+x$padj = p.adjust(x$p.value, method = "BH")
+X = cor(flip(X), method = "spearman")[rownames(X),rownames(X)]
+for(el in 1:(dim(X)[1])){
+  for(EL in 1:(dim(X)[1])){
+    if(el == EL){
+      X[el,EL] = 0
+    } else{
+      if(el>EL){
+        X[rownames(X)[EL],colnames(X)[el]] = -log10(x[(x$drug1 == rownames(X)[el] | x$drug2 == rownames(X)[el]) & (x$drug1 == rownames(X)[EL] | x$drug2 == rownames(X)[EL]),"padj"] + 1e-100) + 3
+      } else {
+        X[rownames(X)[EL],colnames(X)[el]] = x[(x$drug1 == rownames(X)[el] | x$drug2 == rownames(X)[el]) & (x$drug1 == rownames(X)[EL] | x$drug2 == rownames(X)[EL]),"estimate"]
+      }
+    }
+  }
+}
+
+col_fun = colorRamp2(breaks = c(rev(0-quantile(abs(x$estimate[!x$estimate==0]))), 0, quantile(abs(x$estimate[!x$estimate==0])), -log10(c(1, 0.1 +1e-15, 0.1, 0.05 + 1e-15, 0.05, 0.01, 0.001, 1e-4, 1e-15) + 1e-100) + 3),
+                     colors = c(hcl.colors(5, palette = "PuBu"), "white", rev(hcl.colors(5, palette = "YlOrRd")), c("white", "white", "yellow", rev((hcl.colors(5, palette = "Viridis"))[c(1,2,3,4,5)]), "black"))) 
+
+ha = Heatmap(X, cluster_rows = F, cluster_columns = F, col = col_fun, show_heatmap_legend =  F, row_names_side = "left")
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = col_fun, at = -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4) + 1e-100) + 3,  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001), direction = "horizontal")
+
+lgd_cor = Legend(title = "Correlation coefficient", col_fun = col_fun, at = 0:10/5-1, direction = "horizontal")
+
+draw(ha, annotation_legend_list = list(lgd_pvalue, lgd_cor), merge_legend = T, column_title = "Correlation of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"), heatmap_legend_side = "bottom")'
+
+```
+
+```{r}
+'fig4_aedcm_drh <-  grid.grabExpr(draw(ha, annotation_legend_list = list(lgd_pvalue, lgd_cor), merge_legend = T, column_title = "Correlation of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"), heatmap_legend_side = "bottom"))
+
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedcm_drh, file = "fig4_aedcm_drh.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedcm_drh, filename = "fig4_aedcm_drh.png", width = 6, height = 6, dpi = 400)'
+```
+
+
+
+
+
+
+
+```{r}
+X = gsealm_drh[my_aeds[my_aeds %in% rownames(drh_res)],(cli[tolower(substr(colnames(gsealm_drh),1,12)),"seizure_history"]=="yes")&(!is.na(cli[tolower(substr(colnames(gsealm_drh),1,12)),"seizure_history"]))]
+
+library(tidyr)
+X = (flip(X))
+
+x = setNames(cli[tolower(substr(rownames(X),1,12)),"IDH.status"], rownames(X))
+x = apply(X,2,function(el){
+  wilcox.test(drug~idh, data = data.frame(drug = el, idh = x[names(el)]))$p.value
+})
+x = p.adjust(x, method = "BH")
+x = data.frame(p = x, y = names(x), x = max(X) + 0.25 * (max(X) - min(X)))
+x$label = paste0("", signif(x$p, 2))
+x$label[x$p < 0.0001] = "< 0.0001"
+
+X = as.data.frame(X)
+X$IDH = cli[substr(tolower(rownames(X)),1,12),"IDH.status"]
+X = X[!is.na(X$IDH),]
+X$IDH = factor(as.character(X$IDH), levels = c("Mutant", "WT"))
+X = pivot_longer(X, cols = intersect(colnames(X), names(drh)), names_to = "pharmaceutical")
+X$pharmaceutical = factor(as.character(X$pharmaceutical), levels = my_aeds)
+
+
+library(ggridges)
+p = ggplot(data = X) +
+  geom_density_ridges(aes(x = value, y = pharmaceutical, fill = IDH, point_color = IDH), scale = 0.5, jittered_points = TRUE, position = "raincloud", point_alpha = 0.1) +
+  scale_fill_manual(name = "IDH status", values = alpha(c("darkgoldenrod", "cyan"), 0.4)) +
+  scale_discrete_manual(name = "IDH status", aesthetics = "point_color", values = alpha(c("darkgoldenrod", "cyan"), 0.1)) +
+  geom_boxplot(aes(x = value, y = pharmaceutical), color = "black", fill = "white", width = 0.1, outlier.size = 0) +
+  geom_text(data = x, aes(x = x, y = y, label = label), angle = 90) +
+  labs(title = "GSEAlm pharmaceuticals score relation to IDH mutation",
+       subtitle = paste0("Wilcoxon test adjusted p-value:"),
+       x = "GSEAlm pharmaceuticals score",
+       y = "") +
+  expand_limits(x = max(X$value) + 0.35 * (max(X$value) - min(X$value))) +
+  theme_classic() + coord_flip() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggsave(filename = "t1.png", plot = p, width = 10, height = 5, dpi = 400)
+```
+
+```{r}
+fig4_aedidh_drh = p
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedidh_drh, file = "fig4_aedidh_drh.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedidh_drh, filename = "fig4_aedidh_drh.png", width = 10, height = 6, dpi = 400)
+```
+```{r}
+#dsigdb figres
+```
+
+```{r}
+my_aeds = my_aeds[my_aeds %in% rownames(gsealm_dsigdb)]
+```
+
+
+
+```{r}
+dsigdb_res$sel = rownames(dsigdb_res) %in% my_aeds
+
+a = matrix(0, nrow = 2, ncol = length(rownames(res[!res$gr=="nc",])), dimnames = list(r = c("Upregulated", "Downregulated"), c = rownames(res[!res$gr=="nc",])))
+a["Upregulated",res$hgnc[res$gr=="Upregulated"]] = 1
+a["Downregulated",res$hgnc[res$gr=="Downregulated"]] = 1
+a = a[,intersect(rownames(Nexp), colnames(a))]
+A = GSNormalize(dataset = Nexp[colnames(a),], incidence = a)
+
+x = A["Upregulated",]-A["Downregulated",]
+cli$Epi_score = NA
+cli[tolower(substr(names(x),1,12)),"Epi_score"] = x
+
+X = gsealm_dsigdb[my_aeds,]
+
+X = flip(normalizeQuantiles(flip(X)))
+X = X[my_aeds,order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]
+
+#X = X - rowMin(X)
+#X = X/(rowMax(X) - rowMin(X))
+
+'X = X[c(dsigdb_fgsea[order(dsigdb_fgsea$NES, decreasing = T)[1:10],]$pathway, dsigdb_fgsea[rev(order(dsigdb_fgsea$NES, decreasing = F)[1:10]),]$pathway),
+         order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]'
+
+rownames(X) = sapply(rownames(X), function(el){
+  if(nchar(el)<25){
+    return(el)
+  } else {
+    x = unlist(lapply(strsplit(el, ''), function(x) which(x == ' ')))[which.min(abs(unlist(lapply(strsplit(el, ''), function(x) which(x == ' '))) - (nchar(el)/2)))]
+    el = paste(substr(el, 1, x-1), substr(el, x+1, nchar(el)), sep = "\n")
+    return(el)
+  }
+})
+
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "Cod1p19q", "Location", "Grade", "Histology")
+
+col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+           `Seizures` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green", "glioblastoma" = "purple"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink", "g4" = "purple"))
+
+x = x[,c("IDH", "Cod1p19q", "Histology", "Grade", "Age", "Location")]
+
+ha = HeatmapAnnotation(IDH = x$IDH, Cod1p19q = x$Cod1p19q, Histology = x$Histology, Grade = x$Grade, Location = x$Location, Age = x$Age, col=col, annotation_name_gp = gpar(fontsize = 9),  annotation_legend_param = list(
+  Age = list(direction = "horizontal"),
+  IDH = list(nrow = 2),
+  Cod1p19q = list(nrow = 2),
+  Histology = list(nrow = 2),
+  Grade= list(nrow = 2),
+  Location= list(nrow = 2)))
+
+dsigdb_res$fgsea = -log10(dsigdb_res$padj)
+dsigdb_res$fgsea[is.na(dsigdb_res$fgsea)] = 0
+dsigdb_res$GSEAlm = -log10(dsigdb_res$p.adjusted)
+dsigdb_res$GSEAlm[is.na(dsigdb_res$GSEAlm)] = 0
+
+pvalue_col_fun = colorRamp2(breaks = -log10(c(1, 0.1 +1e-15, 0.1, 0.05 + 1e-15, 0.05, 0.01, 0.001, 1e-4, 1e-15)),
+                     colors = c("white", "white", "yellow", rev((hcl.colors(5, palette = "Viridis"))[c(1,2,3,4,5)]), "black"))
+
+col = list(fgsea = pvalue_col_fun,
+           GSEAlm = pvalue_col_fun)
+
+
+ra = rowAnnotation(df = dsigdb_res[rownames(X),c("fgsea", "GSEAlm")], name = c("fgsea", "GSEAlm"), col = col, show_legend = F, annotation_name_side = "top")
+
+ha = Heatmap(matrix = X,
+             row_order = my_aeds,
+        top_annotation = ha,
+        left_annotation = ra,
+        column_split = factor(gsub("_", "", gsub("NA_", "unknown", paste0(cli[substr(tolower(colnames(X)),1,12),"seizure_history"], "_"))), levels = c("yes", "no", "unknown")),
+        column_title = c("Positive seizure history", "Negative seizure history", "Unknown seizure history"),
+        cluster_column_slices = F,
+        row_names_gp = gpar(fontsize = 11),
+        cluster_columns = T,
+        cluster_rows = F,
+        show_row_names = T,
+        show_column_names = F,
+        show_column_dend = F,
+        clustering_distance_columns = "minkowski",
+        clustering_method_columns = "ward.D",
+        #column_title = "Heatmap of differently expressed genes",
+        name = "GSEAlm-normalized signature",
+        heatmap_legend_param = list(legend_direction = "horizontal", legend_width = unit(2, "in")),
+        col = colorRamp2(breaks = c(quantile(X[X<median(X)]),  median(X), quantile(X[X>median(X)])),
+                         colors = c(hcl.colors(5, palette = "PuBu"), "white", rev(hcl.colors(5, palette = "YlOrRd")))))
+
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = pvalue_col_fun, -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4)), direction = "horizontal",  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001), legend_width = unit(2, "in"))
+
+draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T)
+```
+
+```{r}
+setwd(paste0(wd, "/Figures"))
+
+png(file="fig4_aedhm_dsigdb.png", width = 9, height = 8, units = "in", res = 400)
+draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T, heatmap_legend_side = "bottom", annotation_legend_side = "bottom",  column_title = "Expression of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"))
+dev.off()
+```
+
+```{r}
+library(gtools)
+library(ggnewscale)
+
+
+
+for(el in rev(rownames(dsigdb))){
+  if(el %in% my_aeds){
+    my_aeds = c(el, my_aeds)
+  }
+}
+
+my_aeds = my_aeds[!duplicated(my_aeds)]
+
+x = combinations(length(my_aeds), 2, v=1:length(my_aeds), set=TRUE, repeats.allowed=FALSE)
+
+df = data.frame(x = x[,1], y = x[,2])
+rownames(df) = paste(my_aeds[df$x], my_aeds[df$y], sep = "_")
+
+
+df = cbind(df, as.data.frame(flip(sapply(rownames(df), function(el){
+  unlist(cor.test(gsealm_dsigdb[my_aeds[df[el,"x"]],],gsealm_dsigdb[my_aeds[df[el,"y"]],])[c("p.value", "estimate")])
+}))[rownames(df),]))
+
+df$padj = p.adjust(df$p)
+df$p = -log10(df$padj + 1e-200)
+
+
+p = ggplot() +
+  geom_point(data = df, mapping = aes(x = x, y = - y, color = estimate.cor, size = sapply(p, function(el){min(el,4)}))) + theme_classic() +
+  scale_size(name =  "adjusted p-value", breaks = c(0, 1, 2, 3, 4), labels = c(1, 0.1, 0.01, 0.001, "\u2264 0.0001"), range = c(3,7), limits = c(0,4)) +
+  scale_color_gradientn(name = "Correlation\ncoefficient", lim = c(-1, 1), colors = c("blue4", "blue", "cyan", "gray80", "yellow", "red", "red4"))  + new_scale_colour() + new_scale("size")
+
+
+
+df = data.frame(y = df$x, x = df$y)
+rownames(df) = paste(my_aeds[df$x], my_aeds[df$y], sep = "_")
+
+df$com = sapply(rownames(df), function(el){
+  length(intersect(dsigdb[[my_aeds[df[el,"x"]]]], dsigdb[[my_aeds[df[el,"y"]]]]))
+})
+
+df$prop = sapply(rownames(df), function(el){
+  100*((df[el,"com"]/length(dsigdb[[my_aeds[df[el,"x"]]]])) + (df[el,"com"]/length(dsigdb[[my_aeds[df[el,"y"]]]]))) / 2
+})
+
+#df$s = 4*(log10(df$com + 1) - min(log10(df$com + 1)))/(max(log10(df$com + 1))-min(log10(df$com + 1)))
+
+p = p + geom_point(data = df, mapping = aes(x = x, y = -y, size = log10(com+1), colour = prop)) + 
+  scale_colour_gradientn(name = "Proportion of\ncommon targets", lim = c(0, 100), colours = c("white", "green", "forestgreen", "black")) + guides(size = guide_none()) +
+  scale_size(range = c(0,7)) +
+  scale_x_discrete(breaks = my_aeds[my_aeds %in% c(df$x, df$y)]) + scale_y_discrete(breaks = rev(my_aeds[my_aeds %in% c(df$y, df$x)])) + scale_x_continuous(breaks = 1:length(my_aeds), labels = my_aeds) + scale_y_continuous(breaks = 0 - (1:length(my_aeds)), labels = my_aeds) +
+  theme(legend.position = c("right"), legend.direction = "vertical", legend.box = "vertical", panel.border = element_rect(linetype = "solid", fill = NA), panel.grid.major = element_line(colour = "gray"), axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+  labs(x = "", y = "", title = "Correlation of AEDs signatures", subtitle = "Pearson's correlation")
+
+
+ggsave(p, filename = "t1.png", width = 10, height = 6, dpi = 400)
+```
+
+```{r}
+fig4_aedcm_dsigdb <- p
+
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedcm_dsigdb, file = "fig4_aedcm_dsigdb.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedcm_dsigdb, filename = "fig4_aedcm_dsigdb.png", width = 10, height = 6, dpi = 400)
+```
+
+
+
+
+```{r}
+'X = gsealm_dsigdb[rownames(dsigdb_res[dsigdb_res$sel,]),(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]=="yes")&(!is.na(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]))]
+x = flip(combn(rownames(X), m =2))
+colnames(x) = c("drug1", "drug2")
+#x
+
+x = as.data.frame(cbind(x,flip(apply(x, 1,function(el){
+  setNames(as.numeric(unlist(cor.test(X[el[1],], X[el[2],])[c("p.value", "estimate")])), c("p.value", "estimate"))}))))
+x$p.value = as.numeric(as.character(x$p.value))
+x$estimate = as.numeric(as.character(x$estimate))
+
+#x$p.value[x$p.value==0] = as.numeric(min(x$p.value[!x$p.value==0]))/(1e300)
+x$padj = p.adjust(x$p.value, method = "BH")
+X = cor(flip(X), method = "spearman")[rownames(X),rownames(X)]
+for(el in 1:(dim(X)[1])){
+  for(EL in 1:(dim(X)[1])){
+    if(el == EL){
+      X[el,EL] = 0
+    } else{
+      if(el>EL){
+        X[rownames(X)[EL],colnames(X)[el]] = -log10(x[(x$drug1 == rownames(X)[el] | x$drug2 == rownames(X)[el]) & (x$drug1 == rownames(X)[EL] | x$drug2 == rownames(X)[EL]),"padj"] + 1e-100) + 3
+      } else {
+        X[rownames(X)[EL],colnames(X)[el]] = x[(x$drug1 == rownames(X)[el] | x$drug2 == rownames(X)[el]) & (x$drug1 == rownames(X)[EL] | x$drug2 == rownames(X)[EL]),"estimate"]
+      }
+    }
+  }
+}
+
+col_fun = colorRamp2(breaks = c(rev(0-quantile(abs(x$estimate[!x$estimate==0]))), 0, quantile(abs(x$estimate[!x$estimate==0])), -log10(c(1, 0.1 +1e-15, 0.1, 0.05 + 1e-15, 0.05, 0.01, 0.001, 1e-4, 1e-15) + 1e-100) + 3),
+                     colors = c(hcl.colors(5, palette = "PuBu"), "white", rev(hcl.colors(5, palette = "YlOrRd")), c("white", "white", "yellow", rev((hcl.colors(5, palette = "Viridis"))[c(1,2,3,4,5)]), "black"))) 
+
+ha = Heatmap(X, cluster_rows = F, cluster_columns = F, col = col_fun, show_heatmap_legend =  F, row_names_side = "left")
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = col_fun, at = -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4) + 1e-100) + 3,  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001), direction = "horizontal")
+
+lgd_cor = Legend(title = "Correlation coefficient", col_fun = col_fun, at = 0:10/5-1, direction = "horizontal")
+
+draw(ha, annotation_legend_list = list(lgd_pvalue, lgd_cor), merge_legend = T, column_title = "Correlation of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"), heatmap_legend_side = "bottom")'
+
+```
+
+```{r}
+'fig4_aedcm_dsigdb <-  grid.grabExpr(draw(ha, annotation_legend_list = list(lgd_pvalue, lgd_cor), merge_legend = T, column_title = "Correlation of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"), heatmap_legend_side = "bottom"))
+
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedcm_dsigdb, file = "fig4_aedcm_dsigdb.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedcm_dsigdb, filename = "fig4_aedcm_dsigdb.png", width = 6, height = 6, dpi = 400)'
+```
+
+
+
+
+
+
+
+```{r}
+X = gsealm_dsigdb[my_aeds,(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]=="yes")&(!is.na(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]))]
+
+library(tidyr)
+X = (flip(X))
+
+x = setNames(cli[tolower(substr(rownames(X),1,12)),"IDH.status"], rownames(X))
+x = apply(X,2,function(el){
+  wilcox.test(drug~idh, data = data.frame(drug = el, idh = x[names(el)]))$p.value
+})
+x = p.adjust(x, method = "BH")
+x = data.frame(p = x, y = names(x), x = max(X) + 0.25 * (max(X) - min(X)))
+x$label = paste0("", signif(x$p, 2))
+x$label[x$p < 0.0001] = "< 0.0001"
+
+X = as.data.frame(X)
+X$IDH = cli[substr(tolower(rownames(X)),1,12),"IDH.status"]
+X = X[!is.na(X$IDH),]
+X$IDH = factor(as.character(X$IDH), levels = c("Mutant", "WT"))
+X = pivot_longer(X, cols = intersect(colnames(X), names(dsigdb)), names_to = "pharmaceutical")
+X$pharmaceutical = factor(as.character(X$pharmaceutical), levels = my_aeds)
+
+
+library(ggridges)
+p = ggplot(data = X) +
+  geom_density_ridges(aes(x = value, y = pharmaceutical, fill = IDH, point_color = IDH), scale = 0.5, jittered_points = TRUE, position = "raincloud", point_alpha = 0.1) +
+  scale_fill_manual(name = "IDH status", values = alpha(c("darkgoldenrod", "cyan"), 0.4)) +
+  scale_discrete_manual(name = "IDH status", aesthetics = "point_color", values = alpha(c("darkgoldenrod", "cyan"), 0.1)) +
+  geom_boxplot(aes(x = value, y = pharmaceutical), color = "black", fill = "white", width = 0.1, outlier.size = 0) +
+  geom_text(data = x, aes(x = x, y = y, label = label), angle = 90) +
+  labs(title = "GSEAlm pharmaceuticals score relation to IDH mutation",
+       subtitle = paste0("Wilcoxon test adjusted p-value:"),
+       x = "GSEAlm pharmaceuticals score",
+       y = "") +
+  expand_limits(x = max(X$value) + 0.35 * (max(X$value) - min(X$value))) +
+  theme_classic() + coord_flip() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggsave(filename = "t1.png", plot = p, width = 10, height = 5, dpi = 400)
+```
+
+```{r}
+fig4_aedidh_dsigdb = p
+setwd(paste0(wd, "/Figures"))
+save(fig4_aedidh_dsigdb, file = "fig4_aedidh_dsigdb.Rdata")
+
+setwd(paste0(wd, "/Figures"))
+ggsave(fig4_aedidh_dsigdb, filename = "fig4_aedidh_dsigdb.png", width = 10, height = 6, dpi = 400)
+
+```
+
+
+
+```{r}
+x = c(,,,)
+#JUNK BELOW THIS LINE
+```
+
+
+```{r}
+
+
+#X = X - rowMin(X)
+#X = X/(rowMax(X) - rowMin(X))
+
+'X = X[c(dsigdb_fgsea[order(dsigdb_fgsea$NES, decreasing = T)[1:10],]$pathway, dsigdb_fgsea[rev(order(dsigdb_fgsea$NES, decreasing = F)[1:10]),]$pathway),
+         order(cli[tolower(substr(colnames(X), 1,12)), "Epi_score"], decreasing = T)]'
+
+rownames(X) = sapply(rownames(X), function(el){
+  if(nchar(el)<25){
+    return(el)
+  } else {
+    x = unlist(lapply(strsplit(el, ''), function(x) which(x == ' ')))[which.min(abs(unlist(lapply(strsplit(el, ''), function(x) which(x == ' '))) - (nchar(el)/2)))]
+    el = paste(substr(el, 1, x-1), substr(el, x+1, nchar(el)), sep = "\n")
+    return(el)
+  }
+})
+
+x = cli[tolower(substr(colnames(X),1,12)),c("seizure_history", "age_at_initial_pathologic_diagnosis","IDH.status","X1p.19q.codeletion","location", "neoplasm_histologic_grade","histological_type")]
+
+colnames(x) = c("Seizures", "Age", "IDH", "Cod1p19q", "Location", "Grade", "Histology")
+
+col = list(IDH = c("NS" = "gray", "WT" = "cyan", "Mutant" = "darkgoldenrod"),
+           `Seizures` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Age = colorRamp2(c(min(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T), max(cli[substr(tolower(colnames(X)),1,12),]$age_at_initial_pathologic_diagnosis,na.rm = T)), c("white", "black")),
+             #TERT = c("NS" = "gray", "Not expressed" = "darkolivegreen4", "Expressed" = "darkorchid4"),
+             `Seizure history` = c("NS" = "gray", "yes" = "#008FFF", "no" = "#FF0007"),
+             Cod1p19q = c("NS" = "gray", "codel" = "brown", "non-codel" = "cornflowerblue"),
+             Histology = c("NS" = "gray", "astrocytoma" = "blue", "oligodendroglioma"  = "yellow", "oligoastrocytoma" = "green", "glioblastoma" = "red4"),
+             Location = c("NS" = "gray", "Temporal" = "orange", "Other" = "lightblue"),
+             #Prognostic = c("NS" = "gray", "Positive" = "dodgerblue", "Negative"="deeppink"),
+             #multiv = c("NS" = "gray", "Positive" = "blue4", "Negative"="red4"),
+             #verset = c("NS" = "gray", "Positive" = "deepskyblue", "Negative"="red"),
+             #Karnofsky = colorRamp2(c(min(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T), max(cli[substr(tolower(colnames(Xn)),1,12),]$karnofsky_performance_score,na.rm = T)), c("lawngreen", "darkslateblue")),
+             #MGMT = c("NS" = "gray", "Methylated" = "cyan4", "Unmethylated"="coral"),
+             Grade = c("NS" = "gray", "g2" = "forestgreen", "g3" = "pink", "g4" = "red4"))
+
+x = x[,c("IDH", "Cod1p19q", "Histology", "Grade", "Age", "Location")]
+
+ha <- HeatmapAnnotation(df=x,name = colnames(x),col=col, annotation_name_gp = gpar(fontsize = 9))
+
+dsigdb_res$fgsea = -log10(dsigdb_res$padj)
+dsigdb_res$fgsea[is.na(dsigdb_res$fgsea)] = 0
+dsigdb_res$GSEAlm = -log10(dsigdb_res$p.adjusted)
+dsigdb_res$GSEAlm[is.na(dsigdb_res$GSEAlm)] = 0
+
+pvalue_col_fun = colorRamp2(breaks = -log10(c(1, 0.1 +1e-15, 0.1, 0.05 + 1e-15, 0.05, 0.01, 0.001, 1e-4, 1e-15)),
+                     colors = c("white", "white", "yellow", rev((hcl.colors(5, palette = "Viridis"))[c(1,2,3,4,5)]), "black"))
+
+col = list(fgsea = pvalue_col_fun,
+           GSEAlm = pvalue_col_fun)
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = pvalue_col_fun, -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4)),  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001))
+
+ra = rowAnnotation(df = dsigdb_res[rownames(X),c("fgsea", "GSEAlm")], name = c("fgsea", "GSEAlm"), col = col, show_legend = F, annotation_name_side = "top")
+
+ha = Heatmap(matrix = X,
+        top_annotation = ha,
+        left_annotation = ra,
+        column_split = factor(gsub("_", "", gsub("NA_", "unknown", paste0(cli[substr(tolower(colnames(X)),1,12),"seizure_history"], "_"))), levels = c("yes", "no", "unknown")),
+        column_title = c("Positive seizure history", "Negative seizure history", "Unknown seizure history"),
+        cluster_column_slices = F,
+        row_names_gp = gpar(fontsize = 11),
+        cluster_columns = T,
+        cluster_rows = F,
+        show_row_names = T,
+        show_column_names = F,
+        show_column_dend = F,
+        clustering_distance_columns = "minkowski",
+        clustering_method_columns = "ward.D",
+        #column_title = "Heatmap of differently expressed genes",
+        name = "GSEAlm-normalized signature",
+        heatmap_legend_param = list(legend_direction = "vertical"),
+        col = colorRamp2(breaks = c(quantile(X[X<median(X)]),  median(X), quantile(X[X>median(X)])),
+                         colors = c(hcl.colors(5, palette = "PuBu"), "white", rev(hcl.colors(5, palette = "YlOrRd")))))
+
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = pvalue_col_fun, -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4)),  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001))
+
+draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T)
+```
+
+
+
+
+
+```{r}
+fig4_aedhm_dsigdb <-  grid.grabExpr(draw(ha, annotation_legend_list = list(lgd_pvalue), merge_legend = T, column_title = "Expression of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold")))
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(fig4_aedhm_dsigdb, file = "fig4_aedhm_dsigdb.Rdata")
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+ggsave(fig4_aedhm_dsigdb, filename = "fig4_aedhm_dsigdb.png", width = 16, height = 9, dpi = 400)
+```
+
+
+
+```{r}
+X = gsealm_dsigdb[rownames(dsigdb_res[dsigdb_res$sel,]),(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]=="yes")&(!is.na(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]))]
+x = flip(combn(rownames(X), m =2))
+colnames(x) = c("drug1", "drug2")
+#x
+
+x = as.data.frame(cbind(x,flip(apply(x, 1,function(el){
+  setNames(as.numeric(unlist(cor.test(X[el[1],], X[el[2],])[c("p.value", "estimate")])), c("p.value", "estimate"))}))))
+x$p.value = as.numeric(as.character(x$p.value))
+x$estimate = as.numeric(as.character(x$estimate))
+
+#x$p.value[x$p.value==0] = as.numeric(min(x$p.value[!x$p.value==0]))/(1e300)
+x$padj = p.adjust(x$p.value, method = "BH")
+X = cor(flip(X), method = "spearman")[rownames(X),rownames(X)]
+for(el in 1:(dim(X)[1])){
+  for(EL in 1:(dim(X)[1])){
+    if(el == EL){
+      X[el,EL] = 0
+    } else{
+      if(el>EL){
+        X[rownames(X)[EL],colnames(X)[el]] = -log10(x[(x$drug1 == rownames(X)[el] | x$drug2 == rownames(X)[el]) & (x$drug1 == rownames(X)[EL] | x$drug2 == rownames(X)[EL]),"padj"] + 1e-100) + 3
+      } else {
+        X[rownames(X)[EL],colnames(X)[el]] = x[(x$drug1 == rownames(X)[el] | x$drug2 == rownames(X)[el]) & (x$drug1 == rownames(X)[EL] | x$drug2 == rownames(X)[EL]),"estimate"]
+      }
+    }
+  }
+}
+
+col_fun = colorRamp2(breaks = c(rev(0-quantile(abs(x$estimate[!x$estimate==0]))), 0, quantile(abs(x$estimate[!x$estimate==0])), -log10(c(1, 0.1 +1e-15, 0.1, 0.05 + 1e-15, 0.05, 0.01, 0.001, 1e-4, 1e-15) + 1e-100) + 3),
+                     colors = c(hcl.colors(5, palette = "PuBu"), "white", rev(hcl.colors(5, palette = "YlOrRd")), c("white", "white", "yellow", rev((hcl.colors(5, palette = "Viridis"))[c(1,2,3,4,5)]), "black"))) 
+
+ha = Heatmap(X, cluster_rows = F, cluster_columns = F, col = col_fun, show_heatmap_legend =  F, row_names_side = "left")
+
+lgd_pvalue = Legend(title = "Adjusted p-values", col_fun = col_fun, at = -log10(c(1, 0.1, 0.05, 0.01, 0.001, 1e-4) + 1e-100) + 3,  labels = c(1, 0.1, 0.05, 0.01, 0.001, 0.0001), direction = "horizontal")
+
+lgd_cor = Legend(title = "Correlation coefficient", col_fun = col_fun, at = 0:10/5-1, direction = "horizontal")
+
+draw(ha, annotation_legend_list = list(lgd_pvalue, lgd_cor), merge_legend = T, column_title = "Correlation of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"), heatmap_legend_side = "bottom")
+
+```
+```{r}
+fig4_aedcm_dsigdb <-  grid.grabExpr(draw(ha, annotation_legend_list = list(lgd_pvalue, lgd_cor), merge_legend = T, column_title = "Correlation of antiepileptic medications genetic signatures", column_title_gp = gpar(fontface = "bold"), heatmap_legend_side = "bottom"))
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(fig4_aedcm_dsigdb, file = "fig4_aedcm_dsigdb.Rdata")
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+ggsave(fig4_aedcm_dsigdb, filename = "fig4_aedcm_dsigdb.png", width = 6, height = 6, dpi = 400)
+```
+
+
+
+
+```{r}
+X = gsealm_dsigdb[rownames(dsigdb_res[dsigdb_res$sel,]),(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]=="yes")&(!is.na(cli[tolower(substr(colnames(gsealm_dsigdb),1,12)),"seizure_history"]))]
+
+library(tidyr)
+X = (flip(X))
+
+x = setNames(cli[tolower(substr(rownames(X),1,12)),"IDH.status"], rownames(X))
+x = apply(X,2,function(el){
+  wilcox.test(drug~idh, data = data.frame(drug = el, idh = x[names(el)]))$p.value
+})
+x = p.adjust(x, method = "BH")
+x = data.frame(p = x, y = names(x), x = (1.4*max(X) - 0.4*min(x)))
+x$label = paste0("", signif(x$p, 2))
+x$label[x$p < 0.0001] = "< 0.0001"
+
+X = as.data.frame(X)
+X$IDH = cli[substr(tolower(rownames(X)),1,12),"IDH.status"]
+X = X[!is.na(X$IDH),]
+X$IDH = factor(as.character(X$IDH), levels = c("Mutant", "WT"))
+X = pivot_longer(X, cols = intersect(colnames(X), names(dsigdb)), names_to = "pharmaceutical")
+X$pharmaceutical = factor(as.character(X$pharmaceutical), levels = names(sapply(rownames(dsigdb_res[dsigdb_res$sel,]), function(el){
+  mean(X[(X$pharmaceutical==el)&(X$IDH=="Mutant"),]$value) - mean(X[(X$pharmaceutical==el)&(X$IDH=="WT"),]$value)
+})[order(sapply(rownames(dsigdb_res[dsigdb_res$sel,]), function(el){
+  mean(X[(X$pharmaceutical==el)&(X$IDH=="Mutant"),]$value) - mean(X[(X$pharmaceutical==el)&(X$IDH=="WT"),]$value)
+}),decreasing = T)]))
+
+x$x =  1.2*max(X$value) - 0.2*min(X$value)
+library(ggridges)
+p = ggplot(data = X) +
+  geom_density_ridges(aes(x = value, y = pharmaceutical, fill = IDH, point_color = IDH), scale = 0.5, jittered_points = TRUE, position = "raincloud", point_alpha = 0.1) +
+  scale_fill_manual(name = "IDH status", values = alpha(c("darkgoldenrod", "cyan"), 0.4)) +
+  scale_discrete_manual(name = "IDH status", aesthetics = "point_color", values = alpha(c("darkgoldenrod", "cyan"), 0.1)) +
+  geom_boxplot(aes(x = value, y = pharmaceutical), color = "black", fill = "white", width = 0.1, outlier.size = 0) +
+  geom_text(data = x, aes(x = x, y = y, label = label), angle = 90) +
+  labs(title = "GSEAlm pharmaceuticals score relation to IDH mutation",
+       subtitle = paste0("Wilcoxon test adjusted p-value:"),
+       x = "GSEAlm pharmaceuticals score",
+       y = "") +
+  xlim(min(X$value), 1.3*max(X$value) - 0.3*min(X$value)) +
+  theme_classic() + coord_flip() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggsave(filename = "t1.png", plot = p, width = 10, height = 6, dpi = 400)
+```
+
+```{r}
+fig4_aedidh_dsigdb = p
+setwd(paste0(wd, "/Figures/Supplementary"))
+save(fig4_aedidh_dsigdb, file = "fig4_aedidh_dsigdb.Rdata")
+
+setwd(paste0(wd, "/Figures/Supplementary"))
+ggsave(fig4_aedidh_dsigdb, filename = "fig4_aedidh_dsigdb.png", width = 10, height = 6, dpi = 400)
+
+```
+
+```{r}
+intersect(drh_fgsea$pathway,dsigdb_fgsea$pathway)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(SBGNview)
+data("sbgn.xmls")
+data("pathways.info")
+sbgn = getMolList(
+    database = "pathwayCommons"
+    ,mol.list.ID.type = "ENTREZID"
+    ,org = "hsa"
+    ,cpd.or.gene = "gene"
+    ,output.pathway.name = TRUE
+)
+```
+
+```{r}
+Q = setNames(res$log2FoldChange, res$entrez)
+Q = Q[!is.na(res$entrez)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+```
+
+```{r}
+sbgn = lapply(sbgn, function(el){
+  el = intersect(el, names(Q))
+  return(el)
+})
+```
+
+```{r}
+sbgn_fgsea <- fgseaMultilevel(pathways = sbgn, 
+                  stats = Q,
+                  minSize=10,
+                  maxSize=1000)
+
+sbgn_fgsea[order(sbgn_fgsea$NES, decreasing = T),]
+sbgn_fgsea[order(sbgn_fgsea$NES, decreasing = F),]
+```
+
+```{r}
+
+```
+
+
+```{r}
+
+
+Q = Q + min(Q)
+x = Q
+q1 = quantile(Q, probs = seq(0, 1, 0.01))["1%"]
+q2 = quantile(Q, probs = seq(0, 1, 0.01))["99%"]
+
+x[Q<=q1] = -1
+x[Q>=q2] = 1
+x[Q == median(Q)] = 0
+x[Q > q1 & Q < median(Q)] = ((Q[Q > q1 & Q < median(Q)] - q1)/(median(Q) - q1))-1
+x[Q < q2 & Q > median(Q)] = (Q[Q < q2 & Q > median(Q)] - median(Q))/(q2 - median(Q))
+
+#plot(x = Q, y = x)
+
+
+setwd(paste0(wd, "/SBGN"))
+
+for(el in sapply(strsplit(sbgn_fgsea[order(sbgn_fgsea$NES, decreasing = T)[1:10],]$pathway, "::"), function(X){X[1]})){
+  
+  sbgnview.obj <- SBGNview(gene.data = x, #matrix(Q, ncol = 1, dimnames = list(r = as.character(names(Q)), c = "Q"))
+      gene.id.type = "ENTREZID",
+      input.sbgn = el,
+      node.sum = "mean",
+      output.file = "Epi",
+      org = "hsa",
+      output.formats = "png",
+      col.gene.low = "cyan", min.gene.value  = -1,
+      col.gene.high = "red", max.gene.value  = 1,
+      col.gene.mid = "gray", mid.gene.value = 0)
+  print(sbgnview.obj)
+}
+
+```
+```{r}
+setwd(paste0(wd, "/SBGN"))
+
+for(el in sapply(strsplit(sbgn_fgsea[order(sbgn_fgsea$NES, decreasing = F)[1:10],]$pathway, "::"), function(X){X[1]})){
+  
+  sbgnview.obj <- SBGNview(gene.data = x, #matrix(Q, ncol = 1, dimnames = list(r = as.character(names(Q)), c = "Q"))
+      gene.id.type = "ENTREZID",
+      input.sbgn = el,
+      node.sum = "mean",
+      output.file = "NEpi",
+      org = "hsa",
+      output.formats = "sbgn",
+      col.gene.low = "cyan", min.gene.value  = -1,
+      col.gene.high = "red", max.gene.value  = 1,
+      col.gene.mid = "gray", mid.gene.value = 0)
+  print(sbgnview.obj)
+}
+```
+
+```{r}
+Q = setNames(res$log2FoldChange, res$entrez)
+Q = Q[!is.na(res$entrez)]
+Q = Q[!is.na(Q)]
+Q = Q[order(Q, decreasing = T)]
+
+sbgn_abs_fgsea <- fgseaMultilevel(pathways = sbgn, 
+                  stats = abs(Q),
+                  scoreType = "pos",
+                  minSize=10,
+                  maxSize=1000)
+
+sbgn_abs_fgsea[order(sbgn_abs_fgsea$NES, decreasing = T),]
+```
+
+```{r}
+
+
+Q = Q + min(Q)
+x = Q
+q1 = quantile(Q, probs = seq(0, 1, 0.01))["1%"]
+q2 = quantile(Q, probs = seq(0, 1, 0.01))["99%"]
+
+x[Q<=q1] = -1
+x[Q>=q2] = 1
+x[Q == median(Q)] = 0
+x[Q > q1 & Q < median(Q)] = ((Q[Q > q1 & Q < median(Q)] - q1)/(median(Q) - q1))-1
+x[Q < q2 & Q > median(Q)] = (Q[Q < q2 & Q > median(Q)] - median(Q))/(q2 - median(Q))
+
+#plot(x = Q, y = x)
+
+
+setwd(paste0(wd, "/SBGN"))
+
+for(el in sapply(strsplit(sbgn_abs_fgsea[order(sbgn_abs_fgsea$NES, decreasing = T)[1:10],]$pathway, "::"), function(X){X[1]})){
+  
+  sbgnview.obj <- SBGNview(gene.data = x, #matrix(Q, ncol = 1, dimnames = list(r = as.character(names(Q)), c = "Q"))
+      gene.id.type = "ENTREZID",
+      input.sbgn = el,
+      node.sum = "mean",
+      output.file = "Abs_Epi",
+      org = "hsa",
+      output.formats = "png",
+      col.gene.low = "cyan", min.gene.value  = -1,
+      col.gene.high = "red", max.gene.value  = 1,
+      col.gene.mid = "gray", mid.gene.value = 0)
+  print(sbgnview.obj)
+}
+
+```
+
+```{r}
+setwd(paste0(wd, "/SBGN"))
+
+for(el in ){
+  
+  sbgnview.obj <- SBGNview(gene.data = x, #matrix(Q, ncol = 1, dimnames = list(r = as.character(names(Q)), c = "Q"))
+      gene.id.type = "ENTREZID",
+      input.sbgn = el,
+      node.sum = "mean",
+      output.file = "NEpi",
+      org = "hsa",
+      output.formats = "sbgn",
+      col.gene.low = "cyan", min.gene.value  = -1,
+      col.gene.high = "red", max.gene.value  = 1,
+      col.gene.mid = "gray", mid.gene.value = 0)
+  print(sbgnview.obj)
+}
+```
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
